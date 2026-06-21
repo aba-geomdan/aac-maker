@@ -1,3 +1,10 @@
+/**
+ * 검단ABA 언어행동연구소 AAC 카드 메이커
+ * © 검단ABA 언어행동연구소 · 민다혜 (BCBA)
+ *
+ * 본 자료는 검단ABA언어행동연구소의 지적재산입니다.
+ * 무단 복제·배포·재판매·온라인 게시를 엄격히 금지합니다.
+ */
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu } from 'lucide-react';
 
@@ -4519,62 +4526,24 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  {/* 인쇄 안내 - Ctrl+P 강조 */}
-                  <div className="no-print max-w-[210mm] mx-auto mb-4 bg-gradient-to-br from-amber-50 to-amber-100 border-2 border-amber-300 rounded-xl p-5 shadow-sm">
-                    {/* 폰트 로딩 상태: 로딩 중일 때만 표시. 완료되면 자연스럽게 숨김 */}
+                  {/* 인쇄 액션 - GitHub Pages 배포 환경이라 window.print() 정상 작동, 큰 안내 박스 불필요 */}
+                  <div className="no-print max-w-[210mm] mx-auto mb-4 flex flex-col items-center gap-2">
+                    {/* 폰트 로딩 표시 - 로딩 중일 때만 작게 표시 */}
                     {!fontsReady && (
-                      <div className="mb-3 px-3 py-2 bg-white border border-amber-300 rounded-lg flex items-center gap-2.5">
-                        <span className="inline-block w-3.5 h-3.5 border-2 border-amber-600 border-t-transparent rounded-full animate-spin flex-shrink-0"></span>
-                        <span className="text-[12px] text-amber-900 font-medium">한글 폰트 로딩 중... 잠시만 기다려주세요 (1~2초)</span>
+                      <div className="flex items-center gap-2 text-xs text-stone-500">
+                        <span className="inline-block w-3 h-3 border-2 border-stone-400 border-t-transparent rounded-full animate-spin flex-shrink-0"></span>
+                        <span>한글 폰트 로딩 중...</span>
                       </div>
                     )}
-                    <div className="text-center mb-4">
-                      <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-white rounded-full border border-amber-300 mb-2">
-                        <span className="text-xs font-bold text-amber-800">📄 PDF로 저장하는 방법</span>
-                      </div>
-                    </div>
-
-                    <div className="bg-white rounded-lg p-4 mb-3 border border-amber-200">
-                      <div className="flex items-center justify-center gap-3 mb-2">
-                        <span className="text-xs font-bold text-stone-500">아래 키를 눌러주세요</span>
-                      </div>
-                      <div className="flex items-center justify-center gap-2 text-base">
-                        <kbd className="px-3 py-2 bg-stone-900 text-white rounded-lg font-bold shadow-md min-w-[44px] text-center">Ctrl</kbd>
-                        <span className="text-stone-400 font-bold">+</span>
-                        <kbd className="px-3 py-2 bg-stone-900 text-white rounded-lg font-bold shadow-md min-w-[44px] text-center">P</kbd>
-                        <span className="text-stone-400 text-sm mx-2">또는</span>
-                        <kbd className="px-3 py-2 bg-stone-900 text-white rounded-lg font-bold shadow-md min-w-[44px] text-center">⌘</kbd>
-                        <span className="text-stone-400 font-bold">+</span>
-                        <kbd className="px-3 py-2 bg-stone-900 text-white rounded-lg font-bold shadow-md min-w-[44px] text-center">P</kbd>
-                        <span className="text-stone-400 text-[10px] ml-1">(Mac)</span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <p className="text-[12px] text-amber-900 leading-relaxed flex items-start gap-1.5">
-                        <span className="font-bold text-amber-700 flex-shrink-0">①</span>
-                        <span>위 키를 누르면 인쇄 대화상자가 열려요</span>
-                      </p>
-                      <p className="text-[12px] text-amber-900 leading-relaxed flex items-start gap-1.5">
-                        <span className="font-bold text-amber-700 flex-shrink-0">②</span>
-                        <span>인쇄 대상(프린터)을 <span className="font-bold bg-amber-200 px-1.5 rounded">"PDF로 저장"</span>으로 바꿔주세요</span>
-                      </p>
-                      <p className="text-[12px] text-amber-900 leading-relaxed flex items-start gap-1.5">
-                        <span className="font-bold text-amber-700 flex-shrink-0">③</span>
-                        <span>저장 버튼을 누르면 PDF 파일로 저장돼요</span>
-                      </p>
-                    </div>
-
                     <button
                       onClick={() => {
                         saveCurrentToHistory().catch(err => devWarn('히스토리 저장 실패:', err));
                         doActualPrint();
                       }}
-                      className="mt-4 w-full flex items-center justify-center gap-1.5 px-4 py-2.5 bg-white hover:bg-stone-50 text-stone-700 text-xs font-medium rounded-lg border border-amber-300 transition"
-                      title="버튼이 안 눌리는 환경에선 위 Ctrl+P 사용"
+                      className="flex items-center justify-center gap-2 px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
                     >
-                      <FileDown className="w-3.5 h-3.5" />
-                      또는 인쇄 시도 (안 되면 Ctrl+P 사용)
+                      <FileDown className="w-4 h-4" />
+                      인쇄 / PDF 저장
                     </button>
                   </div>
 
