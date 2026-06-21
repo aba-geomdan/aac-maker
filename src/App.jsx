@@ -10,9 +10,6 @@ const LOGO_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHsAAACACAY
 // 로그인 시스템: 관리자가 선생님 계정 등록/관리
 // ============================================================
 
-// ───── 앱 버전 (배포본 식별용) ─────
-const APP_VERSION = 'v1.0.0';
-
 // ───── 인증 설정 ─────
 const AUTH_SALT = 'kdaba_aac_2026';
 const AUTH_STORAGE_KEY = 'aac_auth_session';
@@ -37,93 +34,60 @@ const CATEGORIES_KEY = 'aac_categories';
 const DRAFT_KEY_PREFIX = 'aac_draft:'; // 작업 중 카드 자동 저장 (사용자별, localStorage만)
 const SESSION_HOURS = 24; // 로그인 유효 시간
 
-// ───── 통합 저장소 (Supabase 우선, localStorage 폴백) ─────
-// 통합 시스템과 동일한 Supabase 프로젝트를 사용하되 AAC 전용 테이블 사용
-// 서버 오류 / 네트워크 장애 시 자동으로 localStorage로 폴백
-//
-// 데이터 모델:
-//   shared = true  → aac_shared_store  (모든 사용자 공유: 계정 DB, 카테고리, 공유 히스토리)
-//   shared = false → aac_teacher_store (선생님 개인 데이터: 작업 중 카드 draft 등)
-//
-// Supabase 설정값은 빌드 시 환경변수(.env)로 주입됩니다.
-const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY || '';
+// ───── 통합 저장소 (window.storage 우선, localStorage 폴백) ─────
+// window.storage가 있으면 공유 저장소로 사용 (모든 사용자 동기화)
+// 서버 오류 / rate limit 시 자동으로 localStorage로 폴백
+let hasClaudeStorage = typeof window !== 'undefined' && window.storage && typeof window.storage.get === 'function';
 
-let hasSupabase = typeof window !== 'undefined' && !!SUPABASE_URL && !!SUPABASE_ANON_KEY;
-
-// 연속 실패 시 그 세션 동안은 Supabase 사용 중단 (localStorage만)
-let supabaseDisabled = false;
-const disableSharedStorage = () => {
-  if (supabaseDisabled) return;
-  supabaseDisabled = true;
-  hasSupabase = false;
-  devWarn('🔴 Supabase 연결 실패 - 이 세션은 localStorage만 사용합니다');
+// rate limit 감지 - 한 번 걸리면 그 세션 동안은 window.storage 안 씀
+let rateLimitHit = false;
+const isRateLimitError = (e) => {
+  const msg = (e?.message || e?.toString() || '').toLowerCase();
+  return msg.includes('rate limit') || msg.includes('429');
 };
-
-const tableFor = (shared) => (shared ? 'aac_shared_store' : 'aac_teacher_store');
-
-// Supabase REST 헬퍼 (라이브러리 없이 fetch로 직접 호출)
-const sbFetch = async (path, options = {}) => {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    ...options,
-    headers: {
-      'apikey': SUPABASE_ANON_KEY,
-      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`Supabase ${res.status}: ${await res.text().catch(() => '')}`);
-  }
-  return res;
+const disableSharedStorage = () => {
+  if (rateLimitHit) return;
+  rateLimitHit = true;
+  hasClaudeStorage = false;
+  devWarn('🔴 Rate limit 감지 - 이 세션은 localStorage만 사용합니다');
 };
 
 const store = {
   // 데이터 읽기
-  // localStorage 우선 - 항상 최신 (모든 set은 localStorage 즉시 + Supabase 시도)
+  // localStorage를 우선 - 항상 최신 (모든 set은 localStorage 즉시 + window.storage 시도)
+  // window.storage가 실패할 수 있어서 localStorage가 더 신뢰 가능
   async get(key, shared = false) {
     // 1) localStorage 먼저 확인 - 최신 상태 보장
     try {
       const local = localStorage.getItem(key);
       if (local !== null) return local;
     } catch {}
-    // 2) localStorage에 없으면 Supabase에서 가져오기 (첫 사용 또는 다른 기기 데이터)
-    if (hasSupabase) {
+    // 2) localStorage에 없으면 window.storage에서 가져오기 (첫 사용 또는 다른 기기 데이터)
+    if (hasClaudeStorage) {
       try {
-        const res = await sbFetch(
-          `${tableFor(shared)}?key=eq.${encodeURIComponent(key)}&select=value`,
-          { method: 'GET' }
-        );
-        const rows = await res.json();
-        if (Array.isArray(rows) && rows.length > 0 && rows[0].value != null) {
-          const value = rows[0].value;
-          try { localStorage.setItem(key, value); } catch {}
-          return value;
+        const result = await window.storage.get(key, shared);
+        if (result?.value !== undefined && result?.value !== null) {
+          // 가져온 값을 localStorage에 캐싱
+          try { localStorage.setItem(key, result.value); } catch {}
+          return result.value;
         }
       } catch (e) {
-        devWarn('Supabase get 실패:', e?.message);
-        disableSharedStorage();
+        if (isRateLimitError(e)) disableSharedStorage();
       }
     }
     return null;
   },
 
-  // 데이터 쓰기 (upsert)
+  // 데이터 쓰기
   async set(key, value, shared = false) {
     // localStorage에는 무조건 즉시 저장 (백업)
     try { localStorage.setItem(key, value); } catch {}
-    if (hasSupabase) {
+    if (hasClaudeStorage) {
       try {
-        await sbFetch(tableFor(shared), {
-          method: 'POST',
-          headers: { 'Prefer': 'resolution=merge-duplicates' },
-          body: JSON.stringify([{ key, value }]),
-        });
+        await window.storage.set(key, value, shared);
         return true;
       } catch (e) {
-        devWarn('Supabase set 실패:', e?.message);
-        disableSharedStorage();
+        if (isRateLimitError(e)) disableSharedStorage();
         // localStorage엔 이미 저장됐으니 OK
         return true;
       }
@@ -133,15 +97,11 @@ const store = {
 
   async delete(key, shared = false) {
     try { localStorage.removeItem(key); } catch {}
-    if (hasSupabase) {
+    if (hasClaudeStorage) {
       try {
-        await sbFetch(
-          `${tableFor(shared)}?key=eq.${encodeURIComponent(key)}`,
-          { method: 'DELETE' }
-        );
+        await window.storage.delete(key, shared);
       } catch (e) {
-        devWarn('Supabase delete 실패:', e?.message);
-        disableSharedStorage();
+        if (isRateLimitError(e)) disableSharedStorage();
       }
     }
     return true;
@@ -1169,7 +1129,6 @@ const LoginScreen = ({ onLogin }) => {
           <p className="font-medium text-stone-500">© 검단ABA 언어행동연구소 · 민다혜 (BCBA)</p>
           <p className="mt-1.5">본 자료는 검단ABA언어행동연구소의 지적재산입니다.</p>
           <p>무단 복제·배포·재판매·온라인 게시를 엄격히 금지합니다.</p>
-          <p className="mt-2 text-stone-400">{APP_VERSION}</p>
         </div>
       </div>
     </div>
@@ -2283,7 +2242,7 @@ const TutorialOverlay = ({ onClose }) => {
     {
       icon: FileDown,
       title: '6. PDF로 출력',
-      desc: '우측 상단 "PDF로 저장" 버튼을 누르면 인쇄 미리보기 화면으로 이동합니다. 거기서 "지금 인쇄 / PDF로 저장하기" 버튼 → 인쇄 대상을 "PDF로 저장"으로 선택하면 끝!',
+      desc: '우측 상단 "PDF로 저장" 버튼을 누르면 인쇄 미리보기 화면으로 이동합니다. 거기서 "지금 인쇄하기" → 인쇄 대상 "PDF로 저장" 선택하면 끝!',
     },
     {
       icon: History,
@@ -2293,7 +2252,7 @@ const TutorialOverlay = ({ onClose }) => {
     {
       icon: Share2,
       title: '8. 다른 선생님과 공유',
-      desc: '인쇄한 카드 묶음은 자동으로 저장되어, 다른 선생님 컴퓨터에서도 "묶음 불러오기"로 볼 수 있어요. 따로 파일을 주고받고 싶을 땐 .json으로 내보내서 카톡 등으로 보낼 수도 있습니다.',
+      desc: '내 카드 묶음을 .json 파일로 내보내서 카톡으로 동료에게 보낼 수 있어요. 받은 분은 "묶음 불러오기" 버튼으로 추가하면 끝!',
     },
   ];
 
@@ -2416,13 +2375,13 @@ export default function App() {
   useEffect(() => {
     if (!authChecked) return;
     storeSetJSON(AUTH_USERS_KEY, users, true);
-    // 위는 localStorage 즉시 + Supabase 시도. 디바운싱 안 함 (변경 빈도 낮음)
+    // 위는 localStorage 즉시 + window.storage 시도. 디바운싱 안 함 (변경 빈도 낮음)
   }, [users, authChecked]);
 
   const handleLogin = (user) => {
     setCurrentUser(user);
     const expiresAt = Date.now() + SESSION_HOURS * 60 * 60 * 1000;
-    // 세션은 반드시 브라우저 localStorage에 저장 (Supabase는 다른 컴퓨터에 동기화될 수 있음)
+    // 세션은 반드시 브라우저 localStorage에 저장 (window.storage는 다른 컴퓨터에 동기화될 수 있음)
     // localStorage가 차단되면 그냥 메모리에만 유지 (탭 닫으면 다시 로그인)
     try {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
@@ -2497,11 +2456,6 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false); // 모바일 사이드바 토글
   const [editingImageCard, setEditingImageCard] = useState(null); // 이미지 편집 중인 카드
   const [settingsTab, setSettingsTab] = useState('card'); // 'card' | 'print' - 사이드바 탭
-  // 이미지 추가 시 파일명을 라벨로 자동 입력할지 (기본 꺼짐 - 빈칸으로 두고 직접 입력)
-  const [autoLabelFromFilename, setAutoLabelFromFilename] = useState(false);
-  // handleFiles가 빈 의존성 useCallback이라, 최신 토글 값을 ref로 읽는다
-  const autoLabelRef = useRef(autoLabelFromFilename);
-  useEffect(() => { autoLabelRef.current = autoLabelFromFilename; }, [autoLabelFromFilename]);
 
   // 일괄 라벨 편집 모달
   const [showBulkEditor, setShowBulkEditor] = useState(false);
@@ -2783,20 +2737,17 @@ export default function App() {
           const compressedOriginal = await downscaleImage(dataUrl, 800, 0.85);
           // 카드 표시용은 400px (인쇄 50mm = 약 472px이므로 충분)
           const cropped = await cropToSquare(compressedOriginal, 400);
-          // 파일명에서 라벨 자동 추출 (설정이 켜진 경우에만)
-          let autoLabel = '';
-          if (autoLabelRef.current) {
-            autoLabel = file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ').trim();
-            // 의미없는 자동 생성 파일명 패턴은 빈 라벨로 (사용자가 직접 입력하게)
-            const meaningless = (
-              /^(img|image|photo|pic|chatgpt|dall.?e|midjourney|sd|untitled|naver|screenshot|capture|스크린샷|캡처|사진|이미지)/i.test(autoLabel) ||
-              /^(20\d{2}|19\d{2})[년\-\s\.]/.test(autoLabel) || // "2026년 5월", "2026-05-"
-              /^\d{4,}$/.test(autoLabel) || // 숫자만 길게
-              /^[a-f0-9]{8,}$/i.test(autoLabel) // 해시값 같은 거
-            );
-            if (meaningless) autoLabel = '';
-            else autoLabel = autoLabel.slice(0, 20);
-          }
+          // 파일명에서 라벨 자동 추출 (확장자 제거)
+          let autoLabel = file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ').trim();
+          // 의미없는 자동 생성 파일명 패턴은 빈 라벨로 (사용자가 직접 입력하게)
+          const meaningless = (
+            /^(img|image|photo|pic|chatgpt|dall.?e|midjourney|sd|untitled|naver|screenshot|capture|스크린샷|캡처|사진|이미지)/i.test(autoLabel) ||
+            /^(20\d{2}|19\d{2})[년\-\s\.]/.test(autoLabel) || // "2026년 5월", "2026-05-"
+            /^\d{4,}$/.test(autoLabel) || // 숫자만 길게
+            /^[a-f0-9]{8,}$/i.test(autoLabel) // 해시값 같은 거
+          );
+          if (meaningless) autoLabel = '';
+          else autoLabel = autoLabel.slice(0, 20);
           newCards.push({
             id: newId(),
             image: cropped,
@@ -3347,7 +3298,6 @@ export default function App() {
   };
 
   // 미리보기 화면에서 실제 인쇄 실행 (사용자가 명시적으로 클릭)
-  // 배포된 일반 웹페이지에서는 window.print()가 정상 작동한다.
   const doActualPrint = async () => {
     // 인쇄 직전 폰트 로딩 한 번 더 보장 (미리보기 진입 직후 바로 클릭한 경우 대비)
     try {
@@ -3357,14 +3307,45 @@ export default function App() {
     } catch {
       // 폰트 대기 실패해도 인쇄는 계속 시도
     }
-    // 일반 브라우저 환경: window.print() 직접 호출하면 인쇄 대화상자가 뜬다
+    // 방법 1: window.print() 직접
     try {
       window.print();
+      return;
     } catch (err) {
-      devWarn('window.print 실패:', err);
-      // 혹시라도 막힌 환경이면 키보드 단축키 안내
-      safeAlert('🖨️ 인쇄 대화상자가 자동으로 안 열리네요.\n\n키보드의 Ctrl+P (Mac: Cmd+P)를 직접 눌러주세요.\n인쇄 대상에서 "PDF로 저장"을 선택하면 됩니다.');
+      devWarn('방법 1 실패 (window.print):', err);
     }
+
+    // 방법 2: parent window의 print 호출 (iframe 안일 때 부모로 시도)
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.print();
+        return;
+      }
+    } catch (err) {
+      devWarn('방법 2 실패 (parent.print):', err);
+    }
+
+    // 방법 3: 키보드 이벤트로 Ctrl+P 시뮬레이션 시도
+    try {
+      const event = new KeyboardEvent('keydown', {
+        key: 'p',
+        code: 'KeyP',
+        keyCode: 80,
+        which: 80,
+        ctrlKey: true,
+        metaKey: false,
+        bubbles: true,
+        cancelable: true,
+      });
+      document.dispatchEvent(event);
+      window.dispatchEvent(event);
+      // 일반적으로 안 됨 (브라우저는 합성 키 이벤트로 인쇄 안 띄움) 하지만 시도는 함
+    } catch (err) {
+      devWarn('방법 3 실패 (synthetic keypress):', err);
+    }
+
+    // 방법 4: 위 모든 게 안 됐을 때 — 토스트로 키보드 안내
+    safeAlert('🖨️ 인쇄 대화상자가 자동으로 안 열리네요.\n\n키보드의 Ctrl+P (Mac: Cmd+P)를 직접 눌러주세요.\n인쇄 대상에서 "PDF로 저장"을 선택하면 됩니다.');
   };
 
   // ───── 로그인 안 된 경우 ─────
@@ -3377,7 +3358,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-stone-50" style={{ fontFamily: font.css }}>
+    <div className="min-h-screen bg-stone-50 print:min-h-0" style={{ fontFamily: font.css }}>
       {/* 이미지 처리 중 배너 - 우상단 고정. 사용자가 여러 장 추가했을 때 "안 눌렸나?" 오해 방지 */}
       {imageProcessing && (
         <div
@@ -3741,6 +3722,7 @@ export default function App() {
 
         @media print {
           @page { size: A4; margin: 0; }
+          html, body { min-height: 0 !important; height: auto !important; margin: 0 !important; padding: 0 !important; background: white !important; }
           body { background: white !important; }
           .no-print { display: none !important; }
           [data-print-page] { page-break-after: always; box-shadow: none !important; margin: 0 !important; }
@@ -3885,7 +3867,7 @@ export default function App() {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 sm:py-6 grid grid-cols-12 gap-3 sm:gap-6">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 sm:py-6 grid grid-cols-12 gap-3 sm:gap-6 print:max-w-none print:p-0 print:m-0 print:block print:gap-0">
         {/* 모바일 백드롭 */}
         {mobileSidebarOpen && (
           <div
@@ -3966,31 +3948,6 @@ export default function App() {
             {/* 탭 내용: 카드 설정 */}
             {settingsTab === 'card' && (
               <div>
-                {/* 파일명 → 라벨 자동입력 토글 */}
-                <div className="mb-5">
-                  <label className="text-[11px] font-semibold text-stone-500 uppercase tracking-wider mb-2 block">이미지 추가 시 글자</label>
-                  <button
-                    onClick={() => setAutoLabelFromFilename(v => !v)}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg border transition ${
-                      autoLabelFromFilename
-                        ? 'bg-amber-50 border-amber-300'
-                        : 'bg-white border-stone-200 hover:border-stone-300'
-                    }`}
-                  >
-                    <span className="text-xs font-medium text-stone-700 text-left">
-                      파일 이름을 글자로 자동 입력
-                    </span>
-                    <span className={`relative inline-flex items-center w-9 h-5 rounded-full transition flex-shrink-0 ${autoLabelFromFilename ? 'bg-amber-500' : 'bg-stone-300'}`}>
-                      <span className={`inline-block w-4 h-4 bg-white rounded-full shadow transform transition ${autoLabelFromFilename ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-                    </span>
-                  </button>
-                  <p className="text-[10px] text-stone-400 mt-1.5 leading-relaxed">
-                    {autoLabelFromFilename
-                      ? '파일명이 깔끔할 때 편해요 (예: 사과.jpg → "사과")'
-                      : '꺼두면 글자 없이 추가돼요. 카드마다 직접 입력하세요.'}
-                  </p>
-                </div>
-
                 {/* 크기 */}
                 <div className="mb-5">
                   <label className="text-[11px] font-semibold text-stone-500 uppercase tracking-wider mb-2 block">크기</label>
@@ -4562,7 +4519,7 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  {/* 인쇄 안내 - 버튼 한 번이면 끝 */}
+                  {/* 인쇄 안내 - Ctrl+P 강조 */}
                   <div className="no-print max-w-[210mm] mx-auto mb-4 bg-gradient-to-br from-amber-50 to-amber-100 border-2 border-amber-300 rounded-xl p-5 shadow-sm">
                     {/* 폰트 로딩 상태: 로딩 중일 때만 표시. 완료되면 자연스럽게 숨김 */}
                     {!fontsReady && (
@@ -4577,22 +4534,26 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* 큰 인쇄 버튼 - 주 동작 */}
-                    <button
-                      onClick={() => {
-                        saveCurrentToHistory().catch(err => devWarn('히스토리 저장 실패:', err));
-                        doActualPrint();
-                      }}
-                      className="w-full flex items-center justify-center gap-2 px-4 py-3.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-bold rounded-xl shadow-md transition"
-                    >
-                      <FileDown className="w-4 h-4" />
-                      지금 인쇄 / PDF로 저장하기
-                    </button>
+                    <div className="bg-white rounded-lg p-4 mb-3 border border-amber-200">
+                      <div className="flex items-center justify-center gap-3 mb-2">
+                        <span className="text-xs font-bold text-stone-500">아래 키를 눌러주세요</span>
+                      </div>
+                      <div className="flex items-center justify-center gap-2 text-base">
+                        <kbd className="px-3 py-2 bg-stone-900 text-white rounded-lg font-bold shadow-md min-w-[44px] text-center">Ctrl</kbd>
+                        <span className="text-stone-400 font-bold">+</span>
+                        <kbd className="px-3 py-2 bg-stone-900 text-white rounded-lg font-bold shadow-md min-w-[44px] text-center">P</kbd>
+                        <span className="text-stone-400 text-sm mx-2">또는</span>
+                        <kbd className="px-3 py-2 bg-stone-900 text-white rounded-lg font-bold shadow-md min-w-[44px] text-center">⌘</kbd>
+                        <span className="text-stone-400 font-bold">+</span>
+                        <kbd className="px-3 py-2 bg-stone-900 text-white rounded-lg font-bold shadow-md min-w-[44px] text-center">P</kbd>
+                        <span className="text-stone-400 text-[10px] ml-1">(Mac)</span>
+                      </div>
+                    </div>
 
-                    <div className="space-y-1.5 mt-4">
+                    <div className="space-y-1.5">
                       <p className="text-[12px] text-amber-900 leading-relaxed flex items-start gap-1.5">
                         <span className="font-bold text-amber-700 flex-shrink-0">①</span>
-                        <span>위 버튼을 누르면 인쇄 대화상자가 열려요</span>
+                        <span>위 키를 누르면 인쇄 대화상자가 열려요</span>
                       </p>
                       <p className="text-[12px] text-amber-900 leading-relaxed flex items-start gap-1.5">
                         <span className="font-bold text-amber-700 flex-shrink-0">②</span>
@@ -4604,10 +4565,17 @@ export default function App() {
                       </p>
                     </div>
 
-                    {/* 보조 안내: 버튼이 안 먹히는 환경 대비 */}
-                    <p className="text-[11px] text-amber-700/80 text-center mt-3">
-                      버튼이 안 눌리면 키보드 <kbd className="px-1.5 py-0.5 bg-white border border-amber-300 rounded font-semibold">Ctrl</kbd> + <kbd className="px-1.5 py-0.5 bg-white border border-amber-300 rounded font-semibold">P</kbd> (Mac: <kbd className="px-1.5 py-0.5 bg-white border border-amber-300 rounded font-semibold">⌘</kbd> + <kbd className="px-1.5 py-0.5 bg-white border border-amber-300 rounded font-semibold">P</kbd>) 를 직접 눌러주세요
-                    </p>
+                    <button
+                      onClick={() => {
+                        saveCurrentToHistory().catch(err => devWarn('히스토리 저장 실패:', err));
+                        doActualPrint();
+                      }}
+                      className="mt-4 w-full flex items-center justify-center gap-1.5 px-4 py-2.5 bg-white hover:bg-stone-50 text-stone-700 text-xs font-medium rounded-lg border border-amber-300 transition"
+                      title="버튼이 안 눌리는 환경에선 위 Ctrl+P 사용"
+                    >
+                      <FileDown className="w-3.5 h-3.5" />
+                      또는 인쇄 시도 (안 되면 Ctrl+P 사용)
+                    </button>
                   </div>
 
                   <PrintPreview
@@ -4637,7 +4605,7 @@ export default function App() {
 
       {/* 푸터 */}
       <footer className="no-print max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-6 text-center text-[10px] sm:text-[11px] text-stone-400">
-        © 검단ABA 언어행동연구소 · AAC maker · {APP_VERSION}
+        © 검단ABA 언어행동연구소 · AAC maker
       </footer>
     </div>
   );
