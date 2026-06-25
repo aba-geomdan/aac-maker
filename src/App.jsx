@@ -23,6 +23,32 @@ const AUTH_STORAGE_KEY = 'aac_auth_session';
 const AUTH_USERS_KEY = 'aac_users_db';
 
 // ─────────────────────────────────────────────────────────────
+// Supabase Edge Function 인증 (디바이스 간 공유)
+// ─────────────────────────────────────────────────────────────
+// anon key는 GitHub에 노출되어도 안전한 "public" 키
+// 실제 인증은 Edge Function이 service_role로 검증
+const SUPABASE_URL = 'https://vdubgrxwijydwfabwpnk.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZkdWJncnh3aWp5ZHdmYWJ3cG5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MDk1ODgsImV4cCI6MjA5NzE4NTU4OH0.nqNO3vany3M6fzmG5BG6QVdvi8BW2UbhTDhxNnwvA88';
+const AUTH_ENDPOINT = `${SUPABASE_URL}/functions/v1/aac-auth`;
+
+const callAuthFn = async (payload) => {
+  try {
+    const res = await fetch(AUTH_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    return await res.json();
+  } catch (e) {
+    return { ok: false, error: '네트워크 오류: ' + (e?.message || String(e)) };
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
 // 디버그 로그 토글
 // ─────────────────────────────────────────────────────────────
 // 평소(false): 콘솔에 아무것도 출력 안 함. 동료 BCBA가 콘솔 열어볼 일 없으므로 깨끗하게 유지
@@ -1012,36 +1038,26 @@ const LoginScreen = ({ onLogin }) => {
 
     setLoading(true);
     try {
-      // 사용자 DB 가져오기 (Claude shared storage 또는 localStorage 또는 초기값)
-      // INITIAL_USERS는 항상 포함 - 산출물 환경에서도 관리자 로그인 가능
-      let users = INITIAL_USERS;
-      try {
-        const parsed = await storeGetJSON(AUTH_USERS_KEY, true); // shared
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const initialUsernames = new Set(INITIAL_USERS.map(u => u.username));
-          const extraUsers = parsed.filter(u => !initialUsernames.has(u.username));
-          users = [...INITIAL_USERS, ...extraUsers];
-        }
-      } catch (e) {
-        devWarn('사용자 DB 로딩 실패:', e);
-      }
-
-      const user = users.find(u => u.username.toLowerCase() === username.trim().toLowerCase());
-      if (!user) {
-        setError('아이디 또는 비밀번호가 올바르지 않습니다.');
-        setLoading(false);
-        return;
-      }
-
+      // 비밀번호 해시 (클라이언트에서 처리 - 평문 전송 방지)
       const inputHash = await hashPassword(password);
-      if (inputHash !== user.passwordHash) {
-        setError('아이디 또는 비밀번호가 올바르지 않습니다.');
+      // Supabase Edge Function 'aac-auth'에서 사용자 검증 (모든 디바이스에서 공유)
+      const result = await callAuthFn({
+        action: 'login',
+        username: username.trim(),
+        password_hash: inputHash,
+      });
+      if (!result.ok) {
+        setError(result.error || '아이디 또는 비밀번호가 올바르지 않습니다.');
         setLoading(false);
         return;
       }
-
-      // 로그인 성공
-      onLogin(user);
+      // 로그인 성공 - passwordHash는 메모리에만 보관 (사용자 관리 시 admin 인증에 필요)
+      // 세션 localStorage엔 password_hash 저장 안 됨 (Login 시점에만 받음)
+      onLogin({
+        username: result.user.username,
+        role: result.user.role,
+        passwordHash: inputHash, // 메모리 보관용 (사용자 관리 API 호출 시 admin 인증)
+      });
     } catch (err) {
       setError('로그인 처리 중 오류가 발생했습니다.');
       devError(err);
@@ -1151,49 +1167,75 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
   const [error, setError] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [resetPwUser, setResetPwUser] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  // 컴포넌트 마운트 시 Edge Function에서 사용자 목록 가져오기
+  useEffect(() => {
+    let cancelled = false;
+    const loadUsers = async () => {
+      setLoading(true);
+      const result = await callAuthFn({
+        action: 'list',
+        admin_username: currentUser.username,
+        admin_password_hash: currentUser.passwordHash,
+      });
+      if (cancelled) return;
+      if (result.ok) {
+        onUpdate(result.users);
+      } else {
+        setError(result.error || '사용자 목록 불러오기 실패');
+      }
+      setLoading(false);
+    };
+    loadUsers();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addUser = async () => {
     setError('');
-    const u = newUser.username.trim().toLowerCase();
-    const n = newUser.name.trim();
+    const u = newUser.username.trim();
+    const n = newUser.name.trim() || u; // name 비어있으면 username으로 대체
     const p = newUser.password;
 
-    if (!u || !n || !p) {
-      setError('모든 항목을 입력해주세요.');
+    if (!u || !p) {
+      setError('아이디와 비밀번호를 입력해주세요.');
       return;
     }
-    if (u.length < 3) {
-      setError('아이디는 3자 이상이어야 합니다.');
+    if (u.length < 2) {
+      setError('아이디는 2자 이상이어야 합니다.');
       return;
     }
     if (p.length < 4) {
       setError('비밀번호는 4자 이상이어야 합니다.');
       return;
     }
-    if (users.some(usr => usr.username.toLowerCase() === u)) {
+    if (users.some(usr => usr.username === u)) {
       setError('이미 존재하는 아이디입니다.');
       return;
     }
 
     const passwordHash = await hashPassword(p);
-    const today = new Date();
-    const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-
-    const newRecord = {
-      username: u,
-      name: n,
-      role: 'teacher',
-      passwordHash,
-      createdAt: dateStr,
-    };
-
-    onUpdate([...users, newRecord]);
+    // Edge Function 'create' 호출 (Supabase aac_users에 INSERT + 최신 목록 반환)
+    const result = await callAuthFn({
+      action: 'create',
+      admin_username: currentUser.username,
+      admin_password_hash: currentUser.passwordHash,
+      new_username: u,
+      new_password_hash: passwordHash,
+      new_role: 'teacher',
+    });
+    if (!result.ok) {
+      setError(result.error || '추가 실패');
+      return;
+    }
+    onUpdate(result.users); // 최신 목록 (password_hash 제외된 안전 데이터)
     setNewUser({ username: '', name: '', password: '' });
     setShowAddForm(false);
     safeAlert(`"${n}" 선생님 계정이 추가되었습니다.\n아이디: ${u}\n비밀번호: ${p}\n\n선생님께 안전하게 전달해주세요.`);
   };
 
-  const deleteUser = (username) => {
+  const deleteUser = async (username) => {
     if (username === currentUser.username) {
       safeAlert('자기 자신은 삭제할 수 없습니다.');
       return;
@@ -1204,8 +1246,20 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
     }
     const target = users.find(u => u.username === username);
     if (!target) return;
-    if (!safeConfirm(`"${target.name}" (${username}) 계정을 정말 삭제할까요?`)) return;
-    onUpdate(users.filter(u => u.username !== username));
+    const displayName = target.name || target.username;
+    if (!safeConfirm(`"${displayName}" (${username}) 계정을 정말 삭제할까요?`)) return;
+    // Edge Function 'delete' 호출
+    const result = await callAuthFn({
+      action: 'delete',
+      admin_username: currentUser.username,
+      admin_password_hash: currentUser.passwordHash,
+      target_username: username,
+    });
+    if (!result.ok) {
+      safeAlert(result.error || '삭제 실패');
+      return;
+    }
+    onUpdate(result.users);
   };
 
   const resetPassword = async (user, newPassword) => {
@@ -1214,9 +1268,22 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
       return;
     }
     const passwordHash = await hashPassword(newPassword);
-    onUpdate(users.map(u => u.username === user.username ? { ...u, passwordHash } : u));
+    // Edge Function 'resetPassword' 호출
+    const result = await callAuthFn({
+      action: 'resetPassword',
+      admin_username: currentUser.username,
+      admin_password_hash: currentUser.passwordHash,
+      target_username: user.username,
+      new_password_hash: passwordHash,
+    });
+    if (!result.ok) {
+      safeAlert(result.error || '비밀번호 변경 실패');
+      return;
+    }
+    onUpdate(result.users);
     setResetPwUser(null);
-    safeAlert(`"${user.name}" 선생님의 비밀번호가 변경되었습니다.\n새 비밀번호: ${newPassword}`);
+    const displayName = user.name || user.username;
+    safeAlert(`"${displayName}" 선생님의 비밀번호가 변경되었습니다.\n새 비밀번호: ${newPassword}`);
   };
 
   return (
@@ -1319,7 +1386,7 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <p className="text-sm font-bold text-stone-900 truncate">{u.name}</p>
+                        <p className="text-sm font-bold text-stone-900 truncate">{u.name || u.username}</p>
                         {u.username === currentUser.username && (
                           <span className="text-[9px] font-semibold bg-amber-200 text-amber-800 rounded px-1.5 py-0.5">나</span>
                         )}
@@ -2331,38 +2398,29 @@ const TutorialOverlay = ({ onClose }) => {
 export default function App() {
   // ───── 인증 상태 ─────
   const [currentUser, setCurrentUser] = useState(null); // null이면 로그인 안 됨
-  const [users, setUsers] = useState(INITIAL_USERS);
+  const [users, setUsers] = useState([]); // Edge Function에서 동적으로 로드
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [authChecked, setAuthChecked] = useState(false); // 초기 세션 체크 완료 여부
 
-  // 앱 시작 시 사용자 DB + 세션 복원 (async)
+  // 앱 시작 시 세션 복원 (사용자 DB는 더 이상 클라이언트에 보관 안 함 - Edge Function 기반)
   useEffect(() => {
     let cancelled = false;
 
     const loadInitialData = async () => {
-      // 사용자 DB 불러오기 (공유)
-      let userDb = INITIAL_USERS;
-      try {
-        const parsed = await storeGetJSON(AUTH_USERS_KEY, true);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const initialUsernames = new Set(INITIAL_USERS.map(u => u.username));
-          const extraUsers = parsed.filter(u => !initialUsernames.has(u.username));
-          userDb = [...INITIAL_USERS, ...extraUsers];
-        }
-      } catch (e) {
-        devWarn('사용자 DB 로딩 실패:', e);
-      }
-      if (cancelled) return;
-      setUsers(userDb);
-
-      // 세션 복원 (24시간 유효) - 반드시 브라우저 localStorage에서 (컴퓨터별로 분리)
+      // 세션 복원 (24시간 유효) - localStorage (디바이스별로 독립)
+      // 세션에 username + role + passwordHash 저장 (관리자 사용자 관리 API 호출 시 필요)
       try {
         const raw = localStorage.getItem(AUTH_STORAGE_KEY);
         if (raw) {
           const session = JSON.parse(raw);
-          if (session && session.expiresAt && Date.now() < session.expiresAt) {
-            const matched = userDb.find(u => u.username === session.username);
-            if (matched && !cancelled) setCurrentUser(matched);
+          if (session && session.expiresAt && Date.now() < session.expiresAt && session.username && session.role) {
+            if (!cancelled) {
+              setCurrentUser({
+                username: session.username,
+                role: session.role,
+                passwordHash: session.passwordHash || '',
+              });
+            }
           } else {
             localStorage.removeItem(AUTH_STORAGE_KEY);
           }
@@ -2378,12 +2436,8 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // 사용자 DB 변경 시 저장 (공유)
-  useEffect(() => {
-    if (!authChecked) return;
-    storeSetJSON(AUTH_USERS_KEY, users, true);
-    // 위는 localStorage 즉시 + window.storage 시도. 디바운싱 안 함 (변경 빈도 낮음)
-  }, [users, authChecked]);
+  // 사용자 DB는 더 이상 클라이언트에 저장 안 함 (Edge Function이 Supabase aac_users 테이블 관리)
+  // UserManagement 컴포넌트가 자체적으로 list API 호출해서 표시
 
   const handleLogin = (user) => {
     setCurrentUser(user);
@@ -2393,6 +2447,8 @@ export default function App() {
     try {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
         username: user.username,
+        role: user.role,
+        passwordHash: user.passwordHash || '', // 관리자 사용자 관리 API 호출용
         expiresAt,
       }));
     } catch (e) {
