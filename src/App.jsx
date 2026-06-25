@@ -29,7 +29,7 @@ const AUTH_USERS_KEY = 'aac_users_db';
 // 실제 인증은 Edge Function이 service_role로 검증
 const SUPABASE_URL = 'https://vdubgrxwijydwfabwpnk.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZkdWJncnh3aWp5ZHdmYWJ3cG5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MDk1ODgsImV4cCI6MjA5NzE4NTU4OH0.nqNO3vany3M6fzmG5BG6QVdvi8BW2UbhTDhxNnwvA88';
-const AUTH_ENDPOINT = `${SUPABASE_URL}/functions/v1/aac-auth`;
+const AUTH_ENDPOINT = `${SUPABASE_URL}/functions/v1/aac-auth-`;
 
 const callAuthFn = async (payload) => {
   try {
