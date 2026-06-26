@@ -29,7 +29,7 @@ const AUTH_USERS_KEY = 'aac_users_db';
 // 실제 인증은 Edge Function이 service_role로 검증
 const SUPABASE_URL = 'https://vdubgrxwijydwfabwpnk.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZkdWJncnh3aWp5ZHdmYWJ3cG5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MDk1ODgsImV4cCI6MjA5NzE4NTU4OH0.nqNO3vany3M6fzmG5BG6QVdvi8BW2UbhTDhxNnwvA88';
-const AUTH_ENDPOINT = `${SUPABASE_URL}/functions/v1/aac-auth-`;
+const AUTH_ENDPOINT = `${SUPABASE_URL}/functions/v1/aac-auth`;
 
 const callAuthFn = async (payload) => {
   try {
@@ -203,106 +203,136 @@ const summarizeForIndex = (snapshot) => ({
 });
 
 // 인덱스만 빨리 로드 (썸네일로 표시)
-const loadHistoryIndex = async () => {
-  const index = await storeGetJSON(HISTORY_INDEX_KEY, true, []);
-  if (!Array.isArray(index)) return [];
-  // UI 호환을 위해 cards 필드는 thumbnails로 매핑 (미리보기용)
-  return index.map(meta => ({
-    ...meta,
-    cards: (meta.thumbnails || []).map(img => ({ image: img, label: '' })),
+// auth: { username, passwordHash } - 관리자면 모든 사용자 묶음, 선생님이면 본인 것만 (서버에서 자동 필터)
+const loadHistoryIndex = async (auth) => {
+  if (!auth) return [];
+  const result = await callAuthFn({
+    action: 'listBundles',
+    username: auth.username,
+    password_hash: auth.passwordHash,
+  });
+  if (!result.ok) {
+    devWarn('listBundles 실패:', result.error);
+    return [];
+  }
+  // bundles 배열을 기존 UI 형식과 호환되게 매핑
+  return (result.bundles || []).map(b => ({
+    id: b.id,
+    ownerUsername: b.owner_username,
+    title: b.title || '',
+    date: b.created_at,
+    timestamp: new Date(b.created_at).getTime(),
+    cardCount: b.card_count,
+    sizeMm: b.size_mm,
+    categoryId: b.category_id,
+    thumbnails: b.thumbnail ? [b.thumbnail] : [],
+    cards: b.thumbnail ? [{ image: b.thumbnail, label: '' }] : [],
     _isStub: true, // 본문 미로딩 표시
   }));
 };
 
 // 특정 묶음 본문 로드 (필요 시점에 호출)
-const loadHistoryItem = async (id) => {
-  return await storeGetJSON(HISTORY_ITEM_PREFIX + id, true);
+const loadHistoryItem = async (id, auth) => {
+  if (!auth) return null;
+  const result = await callAuthFn({
+    action: 'getBundle',
+    username: auth.username,
+    password_hash: auth.passwordHash,
+    bundle_id: id,
+  });
+  if (!result.ok) {
+    devWarn('getBundle 실패:', result.error);
+    return null;
+  }
+  return { cards: result.bundle?.data?.cards || [] };
 };
 
-// 묶음 추가 (race-safe)
-const addHistoryItem = async (snapshot) => {
-  await acquireHistoryLock();
-  try {
-    // 최신 인덱스 다시 읽기 (다른 세션 변경 사항 반영)
-    const currentIndex = await storeGetJSON(HISTORY_INDEX_KEY, true, []);
-    const newIndex = [summarizeForIndex(snapshot), ...currentIndex];
-    // 본문 먼저 저장
-    await storeSetJSON(HISTORY_ITEM_PREFIX + snapshot.id, {
-      cards: snapshot.cards,
-    }, true);
-    // 인덱스 갱신
-    await storeSetJSON(HISTORY_INDEX_KEY, newIndex, true);
-  } finally {
-    await releaseHistoryLock();
-  }
+// 묶음 추가 (Supabase upsert - 동시성은 서버가 처리)
+const addHistoryItem = async (snapshot, auth) => {
+  if (!auth) return;
+  const thumbnail = snapshot.cards?.[0]?.image || null;
+  const r = await callAuthFn({
+    action: 'saveBundle',
+    username: auth.username,
+    password_hash: auth.passwordHash,
+    bundle_id: snapshot.id,
+    title: snapshot.title || '',
+    data: { cards: snapshot.cards },
+    thumbnail,
+    card_count: snapshot.cards?.length || 0,
+    size_mm: snapshot.sizeMm,
+    category_id: snapshot.categoryId,
+  });
+  if (!r.ok) devWarn('saveBundle 실패:', r.error);
 };
 
-// 묶음 삭제 (race-safe)
-const deleteHistoryItem = async (id) => {
-  // 잠금 없이 즉시 작업 (잠금 자체가 서버 오류 폭주 원인이었음)
-  try {
-    const currentIndex = await storeGetJSON(HISTORY_INDEX_KEY, true, []);
-    const newIndex = (Array.isArray(currentIndex) ? currentIndex : []).filter(m => m.id !== id);
-    // localStorage 우선으로 새 인덱스 즉시 저장
-    try { localStorage.setItem(HISTORY_INDEX_KEY, JSON.stringify(newIndex)); } catch {}
-    await storeSetJSON(HISTORY_INDEX_KEY, newIndex, true);
-    // 본문 삭제
-    try { localStorage.removeItem(HISTORY_ITEM_PREFIX + id); } catch {}
-    await store.delete(HISTORY_ITEM_PREFIX + id, true);
-  } catch (e) {
-    devWarn('묶음 삭제 중 일부 실패:', e);
-  }
+// 묶음 삭제
+const deleteHistoryItem = async (id, auth) => {
+  if (!auth) return;
+  const r = await callAuthFn({
+    action: 'deleteBundle',
+    username: auth.username,
+    password_hash: auth.passwordHash,
+    bundle_id: id,
+  });
+  if (!r.ok) devWarn('deleteBundle 실패:', r.error);
 };
 
-// 묶음 메타 업데이트 (이름 바꾸기, 날짜 갱신 등) - 본문 변경 없을 때
-const updateHistoryMeta = async (id, updates) => {
-  await acquireHistoryLock();
-  try {
-    const currentIndex = await storeGetJSON(HISTORY_INDEX_KEY, true, []);
-    const newIndex = currentIndex.map(m => m.id === id ? { ...m, ...updates } : m);
-    await storeSetJSON(HISTORY_INDEX_KEY, newIndex, true);
-  } finally {
-    await releaseHistoryLock();
-  }
+// 묶음 메타 업데이트 (이름 변경 등) - 서버에서 본문 가져와 메타만 갱신
+const updateHistoryMeta = async (id, updates, auth) => {
+  if (!auth) return;
+  const r1 = await callAuthFn({
+    action: 'getBundle',
+    username: auth.username,
+    password_hash: auth.passwordHash,
+    bundle_id: id,
+  });
+  if (!r1.ok || !r1.bundle) { devWarn('updateMeta: 묶음 조회 실패'); return; }
+  const b = r1.bundle;
+  // updates는 { title } 또는 { name } 둘 다 지원 (legacy 호환)
+  const newTitle = updates.title !== undefined ? updates.title : (updates.name !== undefined ? updates.name : b.title);
+  const r2 = await callAuthFn({
+    action: 'saveBundle',
+    username: auth.username,
+    password_hash: auth.passwordHash,
+    bundle_id: id,
+    title: newTitle || '',
+    data: b.data,
+    thumbnail: b.thumbnail,
+    card_count: b.card_count,
+    size_mm: b.size_mm,
+    category_id: updates.categoryId !== undefined ? updates.categoryId : b.category_id,
+  });
+  if (!r2.ok) devWarn('updateMeta 실패:', r2.error);
 };
 
-// 묶음 순서 변경 (맨 앞으로 끌어올림) - 중복 시 사용
-const moveHistoryToTop = async (id, newDate, newTimestamp) => {
-  await acquireHistoryLock();
-  try {
-    const currentIndex = await storeGetJSON(HISTORY_INDEX_KEY, true, []);
-    const target = currentIndex.find(m => m.id === id);
-    if (!target) return;
-    const rest = currentIndex.filter(m => m.id !== id);
-    const updated = { ...target, date: newDate, timestamp: newTimestamp };
-    await storeSetJSON(HISTORY_INDEX_KEY, [updated, ...rest], true);
-  } finally {
-    await releaseHistoryLock();
-  }
+// 묶음 순서 변경 - Supabase에선 created_at 기준 정렬 자동. 클라이언트 측에서만 처리.
+const moveHistoryToTop = async (id, newDate, newTimestamp, auth) => {
+  // Supabase created_at은 INSERT 시점 기준. UI에선 클라이언트 정렬로 즉시 반영 가능.
+  // 별도 서버 호출은 불필요 (새로고침 후엔 원래 created_at 순서로 복원됨)
+  devLog('moveHistoryToTop: 클라이언트 UI 정렬만 처리');
 };
 
-// 전체 비우기 (관리자 또는 본인 것만)
-const clearHistory = async (ownerFilter = null) => {
-  await acquireHistoryLock();
-  try {
-    const currentIndex = await storeGetJSON(HISTORY_INDEX_KEY, true, []);
-    let toDelete = currentIndex;
-    let toKeep = [];
-    if (ownerFilter) {
-      toDelete = currentIndex.filter(m => m.ownerUsername === ownerFilter);
-      toKeep = currentIndex.filter(m => m.ownerUsername !== ownerFilter);
-    }
-    // 인덱스부터 갱신
-    await storeSetJSON(HISTORY_INDEX_KEY, toKeep, true);
-    // 본문 삭제 (병렬, 실패해도 무시)
-    await Promise.all(
-      toDelete.map(m =>
-        store.delete(HISTORY_ITEM_PREFIX + m.id, true).catch(() => {})
-      )
-    );
-  } finally {
-    await releaseHistoryLock();
-  }
+// 전체 비우기 (관리자: 옵션으로 특정 사용자 것만 / 선생님: 본인 것만)
+const clearHistory = async (ownerFilter, auth) => {
+  if (!auth) return;
+  const result = await callAuthFn({
+    action: 'listBundles',
+    username: auth.username,
+    password_hash: auth.passwordHash,
+  });
+  if (!result.ok) return;
+  const targets = ownerFilter
+    ? (result.bundles || []).filter(b => b.owner_username === ownerFilter)
+    : (result.bundles || []);
+  await Promise.all(targets.map(b =>
+    callAuthFn({
+      action: 'deleteBundle',
+      username: auth.username,
+      password_hash: auth.passwordHash,
+      bundle_id: b.id,
+    }).catch(() => {})
+  ));
 };
 
 // 미리보기/iframe 환경에서 confirm/alert이 차단되는 경우 대비 안전 래퍼
@@ -1098,7 +1128,7 @@ const LoginScreen = ({ onLogin }) => {
                 onChange={(e) => setUsername(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSubmit(e)}
                 autoFocus
-                autoComplete="username"
+                autoComplete="off"
                 lang="ko"
                 inputMode="text"
                 className="w-full px-3 py-2.5 bg-stone-50 border border-stone-200 rounded-lg text-sm text-stone-800 outline-none focus:bg-white focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
@@ -1114,7 +1144,7 @@ const LoginScreen = ({ onLogin }) => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSubmit(e)}
-                  autoComplete="current-password"
+                  autoComplete="new-password"
                   className="w-full px-3 py-2.5 pr-10 bg-stone-50 border border-stone-200 rounded-lg text-sm text-stone-800 outline-none focus:bg-white focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
                   placeholder="비밀번호"
                 />
@@ -2543,24 +2573,44 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const indexed = await loadHistoryIndex();
+        const indexed = await loadHistoryIndex(currentUser);
         if (!cancelled && Array.isArray(indexed)) setHistory(indexed);
       } catch (e) {
         devWarn('히스토리 인덱스 불러오기 실패:', e);
       }
       try {
-        const parsed = await storeGetJSON(CATEGORIES_KEY, true);
-        if (Array.isArray(parsed) && !cancelled) setCategories(parsed);
+        // 카테고리도 Supabase 공유 (aac_app_settings 테이블)
+        const r = await callAuthFn({
+          action: 'getAppSetting',
+          username: currentUser.username,
+          password_hash: currentUser.passwordHash,
+          key: CATEGORIES_KEY,
+        });
+        if (!cancelled && r.ok && Array.isArray(r.value)) setCategories(r.value);
       } catch {}
     })();
     return () => { cancelled = true; };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
 
-  // 카테고리 변경 시 저장 (공유) - authChecked 가드 추가
+  // 카테고리 변경 시 Edge Function으로 저장 (모든 사용자 공유)
+  const categoriesSaveTimerRef = useRef(null);
   useEffect(() => {
-    if (!authChecked) return;
-    debouncedStoreSetJSON(CATEGORIES_KEY, categories, true);
-  }, [categories, authChecked]);
+    if (!authChecked || !currentUser) return;
+    if (categoriesSaveTimerRef.current) clearTimeout(categoriesSaveTimerRef.current);
+    categoriesSaveTimerRef.current = setTimeout(() => {
+      callAuthFn({
+        action: 'saveAppSetting',
+        username: currentUser.username,
+        password_hash: currentUser.passwordHash,
+        key: CATEGORIES_KEY,
+        value: categories,
+      }).catch(e => devWarn('카테고리 저장 실패:', e));
+    }, 800);
+    return () => {
+      if (categoriesSaveTimerRef.current) clearTimeout(categoriesSaveTimerRef.current);
+    };
+  }, [categories, authChecked, currentUser]);
 
   // 필터링 켜질 때 카테고리 박스 자동 펼치기
   useEffect(() => {
@@ -2723,7 +2773,7 @@ export default function App() {
   // 다른 세션의 변경사항을 가져와서 화면에 반영 (수동 새로고침용)
   const refreshHistory = async () => {
     try {
-      const indexed = await loadHistoryIndex();
+      const indexed = await loadHistoryIndex(currentUser);
       if (Array.isArray(indexed)) setHistory(indexed);
     } catch (e) {
       devWarn('히스토리 새로고침 실패:', e);
@@ -3093,7 +3143,7 @@ export default function App() {
       // 인덱스 카드 수와 다르면 본문 로드 안 해도 됨
       if (stub.cardCount !== cardsToSave.length) continue;
       // 본문 로드해서 비교
-      const item = await loadHistoryItem(stub.id);
+      const item = await loadHistoryItem(stub.id, currentUser);
       if (item && isSameCardSet(item.cards, cardsToSave)) {
         duplicateId = stub.id;
         break;
@@ -3102,10 +3152,10 @@ export default function App() {
 
     if (duplicateId) {
       // 중복 - 메타만 갱신 (맨 앞으로)
-      await moveHistoryToTop(duplicateId, dateStr, now.getTime());
+      await moveHistoryToTop(duplicateId, dateStr, now.getTime(, currentUser));
     } else {
       // 새 추가
-      await addHistoryItem(snapshot);
+      await addHistoryItem(snapshot, currentUser);
     }
 
     // UI 갱신 - 인덱스 다시 로드
@@ -3117,7 +3167,7 @@ export default function App() {
     // 인덱스 stub인 경우 본문 로드
     let cardsToAdd = snapshot.cards;
     if (snapshot._isStub) {
-      const item = await loadHistoryItem(snapshot.id);
+      const item = await loadHistoryItem(snapshot.id, currentUser);
       if (!item || !Array.isArray(item.cards)) {
         safeAlert('이 묶음의 카드 데이터를 불러올 수 없습니다.');
         return;
@@ -3144,7 +3194,7 @@ export default function App() {
     setHistory(prev => prev.filter(h => h.id !== id));
     // 백그라운드로 저장소에서도 삭제 (실패해도 화면은 이미 갱신됨)
     try {
-      await deleteHistoryItem(id);
+      await deleteHistoryItem(id, currentUser);
     } catch (e) {
       devWarn('저장소 삭제 실패:', e);
     }
@@ -3161,7 +3211,7 @@ export default function App() {
     if (newName === null) return;
     const trimmed = newName.trim();
     if (!trimmed) return;
-    await updateHistoryMeta(id, { name: trimmed.slice(0, 30) });
+    await updateHistoryMeta(id, { name: trimmed.slice(0, 30, currentUser) });
     await refreshHistory();
   };
 
@@ -3198,7 +3248,7 @@ export default function App() {
     // stub이면 본문 로드
     let cards = h.cards;
     if (h._isStub) {
-      const item = await loadHistoryItem(h.id);
+      const item = await loadHistoryItem(h.id, currentUser);
       if (!item || !Array.isArray(item.cards)) {
         safeAlert('본문을 불러올 수 없습니다.');
         return;
@@ -3222,7 +3272,7 @@ export default function App() {
     // 모든 묶음의 본문 로드 (병렬)
     const withCards = await Promise.all(myHistory.map(async (h) => {
       if (h._isStub) {
-        const item = await loadHistoryItem(h.id);
+        const item = await loadHistoryItem(h.id, currentUser);
         return { ...h, cards: item?.cards || [] };
       }
       return h;
@@ -3279,7 +3329,7 @@ export default function App() {
         let isDup = false;
         for (const stub of myStubs) {
           if (stub.cardCount !== b.cards.length) continue;
-          const item = await loadHistoryItem(stub.id);
+          const item = await loadHistoryItem(stub.id, currentUser);
           if (item && isSameCardSet(item.cards, b.cards)) {
             isDup = true;
             break;
@@ -3309,7 +3359,7 @@ export default function App() {
           ownerUsername: currentUser?.username || 'unknown',
           ownerName: currentUser?.name || '알 수 없음',
         };
-        await addHistoryItem(snapshot);
+        await addHistoryItem(snapshot, currentUser);
         addedCount++;
       }
 
