@@ -2858,17 +2858,9 @@ export default function App() {
           const compressedOriginal = await downscaleImage(dataUrl, 800, 0.85);
           // 카드 표시용은 400px (인쇄 50mm = 약 472px이므로 충분)
           const cropped = await cropToSquare(compressedOriginal, 400);
-          // 파일명에서 라벨 자동 추출 (확장자 제거)
-          let autoLabel = file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ').trim();
-          // 의미없는 자동 생성 파일명 패턴은 빈 라벨로 (사용자가 직접 입력하게)
-          const meaningless = (
-            /^(img|image|photo|pic|chatgpt|dall.?e|midjourney|sd|untitled|naver|screenshot|capture|스크린샷|캡처|사진|이미지)/i.test(autoLabel) ||
-            /^(20\d{2}|19\d{2})[년\-\s\.]/.test(autoLabel) || // "2026년 5월", "2026-05-"
-            /^\d{4,}$/.test(autoLabel) || // 숫자만 길게
-            /^[a-f0-9]{8,}$/i.test(autoLabel) // 해시값 같은 거
-          );
-          if (meaningless) autoLabel = '';
-          else autoLabel = autoLabel.slice(0, 20);
+          // 라벨은 항상 비워둠 (사용자가 직접 입력)
+          // 자동 추출은 부정확한 경우가 많아서 제거함
+          const autoLabel = '';
           newCards.push({
             id: newId(),
             image: cropped,
