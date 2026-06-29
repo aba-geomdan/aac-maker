@@ -3152,7 +3152,7 @@ export default function App() {
 
     if (duplicateId) {
       // 중복 - 메타만 갱신 (맨 앞으로)
-      await moveHistoryToTop(duplicateId, dateStr, now.getTime(, currentUser));
+      await moveHistoryToTop(duplicateId, dateStr, now.getTime(), currentUser);
     } else {
       // 새 추가
       await addHistoryItem(snapshot, currentUser);
