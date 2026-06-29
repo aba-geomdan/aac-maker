@@ -29,7 +29,7 @@ const AUTH_USERS_KEY = 'aac_users_db';
 // 실제 인증은 Edge Function이 service_role로 검증
 const SUPABASE_URL = 'https://vdubgrxwijydwfabwpnk.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZkdWJncnh3aWp5ZHdmYWJ3cG5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MDk1ODgsImV4cCI6MjA5NzE4NTU4OH0.nqNO3vany3M6fzmG5BG6QVdvi8BW2UbhTDhxNnwvA88';
-const AUTH_ENDPOINT = `${SUPABASE_URL}/functions/v1/aac-auth`;
+const AUTH_ENDPOINT = `${SUPABASE_URL}/functions/v1/aac-auth-`;
 
 const callAuthFn = async (payload) => {
   try {
@@ -1175,6 +1175,14 @@ const LoginScreen = ({ onLogin }) => {
 
           <p className="text-[11px] text-stone-400 text-center mt-5 leading-relaxed">
             계정이 필요하신 분은<br/>관리자에게 문의해주세요
+          </p>
+        </div>
+
+        {/* 처음 사용 안내 */}
+        <div className="mt-4 text-center">
+          <p className="text-xs text-stone-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 inline-block leading-relaxed">
+            💬 처음 사용하시거나 문제가 있으면<br/>
+            <span className="font-semibold">민다혜 선생님께 문의</span>해주세요
           </p>
         </div>
 
@@ -4548,10 +4556,43 @@ export default function App() {
 
               {/* 카드 그리드 */}
               {cards.length === 0 ? (
-                <div className="text-center py-16 text-stone-400">
-                  <ImageIcon className="w-12 h-12 mx-auto mb-3 text-stone-300" strokeWidth={1.5} />
-                  <p className="text-sm">아직 카드가 없습니다</p>
-                  <p className="text-xs mt-1">위에서 이미지를 추가해주세요</p>
+                <div className="py-10 px-4 text-center">
+                  <div className="text-5xl mb-3">👋</div>
+                  <h2 className="text-lg sm:text-xl font-bold text-stone-800 mb-1">
+                    안녕하세요{currentUser ? `, ${currentUser.username}` : ''} 선생님!
+                  </h2>
+                  <p className="text-sm text-stone-500 mb-5">첫 카드를 만들어볼까요?</p>
+
+                  {/* 3단계 흐름 */}
+                  <div className="max-w-md mx-auto mb-5 bg-white border border-stone-200 rounded-xl p-4">
+                    <div className="flex items-center justify-between gap-1 sm:gap-2">
+                      <div className="flex-1 text-center">
+                        <div className="w-8 h-8 mx-auto mb-1.5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-sm">1</div>
+                        <p className="text-[11px] sm:text-xs text-stone-700 font-medium">사진 추가</p>
+                      </div>
+                      <ArrowRight className="w-3 h-3 text-stone-300 flex-shrink-0 mt-[-14px]" />
+                      <div className="flex-1 text-center">
+                        <div className="w-8 h-8 mx-auto mb-1.5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-sm">2</div>
+                        <p className="text-[11px] sm:text-xs text-stone-700 font-medium">이름 입력</p>
+                        <p className="text-[9px] sm:text-[10px] text-stone-400">(예: 사과)</p>
+                      </div>
+                      <ArrowRight className="w-3 h-3 text-stone-300 flex-shrink-0 mt-[-14px]" />
+                      <div className="flex-1 text-center">
+                        <div className="w-8 h-8 mx-auto mb-1.5 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-sm">3</div>
+                        <p className="text-[11px] sm:text-xs text-stone-700 font-medium">PDF 저장</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 큰 시작 버튼 - 클릭 시 파일 선택 다이얼로그 즉시 열림 */}
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center gap-2 px-6 py-3 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-md transition"
+                  >
+                    <ImageIcon className="w-5 h-5" />
+                    사진 추가해서 시작
+                  </button>
+                  <p className="text-[11px] text-stone-400 mt-3">클릭하면 사진을 고를 수 있어요</p>
                 </div>
               ) : (
                 <>
