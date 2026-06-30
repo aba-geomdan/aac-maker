@@ -1086,6 +1086,7 @@ const LoginScreen = ({ onLogin }) => {
       onLogin({
         username: result.user.username,
         role: result.user.role,
+        name: result.user.name || result.user.username, // 표시용 이름 (없으면 아이디로 폴백)
         passwordHash: inputHash, // 메모리 보관용 (사용자 관리 API 호출 시 admin 인증)
       });
     } catch (err) {
@@ -2456,6 +2457,7 @@ export default function App() {
               setCurrentUser({
                 username: session.username,
                 role: session.role,
+                name: session.name || session.username,
                 passwordHash: session.passwordHash || '',
               });
             }
@@ -2486,6 +2488,7 @@ export default function App() {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
         username: user.username,
         role: user.role,
+        name: user.name || user.username,
         passwordHash: user.passwordHash || '', // 관리자 사용자 관리 API 호출용
         expiresAt,
       }));
@@ -3659,7 +3662,7 @@ export default function App() {
                                       <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${
                                         isMine ? 'bg-amber-100 text-amber-700' : 'bg-stone-200 text-stone-600'
                                       }`}>
-                                        {group.name.charAt(0)}
+                                        {(group.name || '?').charAt(0)}
                                       </div>
                                       <div className="text-left">
                                         <div className="text-sm font-bold text-stone-900 flex items-center gap-1.5">
@@ -3939,13 +3942,13 @@ export default function App() {
                   <Shield className="w-3.5 h-3.5 text-amber-700" />
                 ) : (
                   <span className="text-[10px] font-bold text-stone-600">
-                    {currentUser.name.charAt(0)}
+                    {(currentUser.name || currentUser.username || '?').charAt(0)}
                   </span>
                 )}
               </div>
               {/* 사용자 이름 - 넓은 화면에서만 표시, 좁으면 자동 숨김 */}
               <div className="hidden md:block leading-tight pr-1 max-w-[80px] overflow-hidden">
-                <p className="text-[11px] font-bold text-stone-900 truncate whitespace-nowrap">{currentUser.name}</p>
+                <p className="text-[11px] font-bold text-stone-900 truncate whitespace-nowrap">{currentUser.name || currentUser.username}</p>
                 <p className="text-[9px] text-stone-500 whitespace-nowrap">
                   {currentUser.role === 'admin' ? '관리자' : '선생님'}
                 </p>
