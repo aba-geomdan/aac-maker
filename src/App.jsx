@@ -2446,10 +2446,12 @@ export default function App() {
     let cancelled = false;
 
     const loadInitialData = async () => {
-      // 세션 복원 (24시간 유효) - localStorage (디바이스별로 독립)
+      // 세션 복원 (24시간 유효) - sessionStorage (브라우저 닫으면 자동 로그아웃)
       // 세션에 username + role + passwordHash 저장 (관리자 사용자 관리 API 호출 시 필요)
       try {
-        const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+        // 과거 localStorage에 자동로그인되던 세션 흔적 제거 (보안)
+        try { localStorage.removeItem(AUTH_STORAGE_KEY); } catch (e2) {}
+        const raw = sessionStorage.getItem(AUTH_STORAGE_KEY);
         if (raw) {
           const session = JSON.parse(raw);
           if (session && session.expiresAt && Date.now() < session.expiresAt && session.username && session.role) {
@@ -2462,7 +2464,7 @@ export default function App() {
               });
             }
           } else {
-            localStorage.removeItem(AUTH_STORAGE_KEY);
+            sessionStorage.removeItem(AUTH_STORAGE_KEY);
           }
         }
       } catch (e) {
@@ -2482,10 +2484,10 @@ export default function App() {
   const handleLogin = (user) => {
     setCurrentUser(user);
     const expiresAt = Date.now() + SESSION_HOURS * 60 * 60 * 1000;
-    // 세션은 반드시 브라우저 localStorage에 저장 (window.storage는 다른 컴퓨터에 동기화될 수 있음)
-    // localStorage가 차단되면 그냥 메모리에만 유지 (탭 닫으면 다시 로그인)
+    // 세션은 sessionStorage에 저장 (브라우저/탭 닫으면 자동 로그아웃 → 공용기기 안전)
+    // sessionStorage가 차단되면 그냥 메모리에만 유지 (탭 닫으면 다시 로그인)
     try {
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
+      sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
         username: user.username,
         role: user.role,
         name: user.name || user.username,
@@ -2493,7 +2495,7 @@ export default function App() {
         expiresAt,
       }));
     } catch (e) {
-      devWarn('세션 저장 실패 (localStorage 차단):', e);
+      devWarn('세션 저장 실패 (sessionStorage 차단):', e);
     }
   };
 
@@ -2511,6 +2513,7 @@ export default function App() {
     setCurrentUser(null);
     setShowUserManagement(false);
     try {
+      sessionStorage.removeItem(AUTH_STORAGE_KEY);
       localStorage.removeItem(AUTH_STORAGE_KEY);
     } catch {}
   };
