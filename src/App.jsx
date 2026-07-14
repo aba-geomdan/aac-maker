@@ -297,7 +297,7 @@ async function dataList(prefix, userIdOverride) {
     const headers = await authHeaders();
     let uid = userIdOverride;
     if (!uid) { const u = await getCurrentAuthUser(); uid = u?.id; }
-    if (!uid) return { keys: [] };
+    if (!uid) return { keys: [], rows: [] };
     const filter = prefix ? `&key=like.${encodeURIComponent(prefix)}*` : '';
     const url = `${SUPABASE_URL}/rest/v1/aac_data?user_id=eq.${uid}&select=key,value${filter}`;
     const r = await fetch(url, { headers });
@@ -457,14 +457,16 @@ const summarizeForIndex = (snapshot) => ({
 //   RLS가 본인(user_id) 것만 반환 → 별도 인덱스 키/owner 필터 불필요
 //   관리자가 특정 선생님 것을 볼 때만 admin_get_aac_data(target) 사용
 // ─────────────────────────────────────────────────────────────
+const HISTORY_INDEX_PREFIX = 'aac_history_index:';
 const HISTORY_KEY = (id) => `${HISTORY_ITEM_PREFIX}${id}`;
+const HISTORY_IDX_KEY = (id) => `${HISTORY_INDEX_PREFIX}${id}`;
 
-// row.value(JSON) → UI 인덱스 형식(stub) 매핑
-const bundleRowToStub = (key, value) => {
+// 인덱스 payload(메타+썸네일)에서 UI stub 생성 — 전체 카드 없이 가벼움
+const indexRowToStub = (key, value) => {
   let d = {};
   try { d = JSON.parse(value) || {}; } catch (e) { d = {}; }
-  const id = d.id || key.slice(HISTORY_ITEM_PREFIX.length);
-  const thumbs = (d.cards || []).slice(0, 4).map(c => c.image).filter(Boolean);
+  const id = d.id || key.slice(HISTORY_INDEX_PREFIX.length);
+  const thumbs = Array.isArray(d.thumbnails) ? d.thumbnails.filter(Boolean) : [];
   return {
     id,
     ownerUsername: d.ownerUsername || '',
@@ -473,7 +475,7 @@ const bundleRowToStub = (key, value) => {
     name: d.title || d.name || '',
     date: d.createdAt || d.date || '',
     timestamp: d.timestamp || (d.createdAt ? new Date(d.createdAt).getTime() : 0),
-    cardCount: d.cardCount != null ? d.cardCount : (d.cards?.length || 0),
+    cardCount: d.cardCount != null ? d.cardCount : thumbs.length,
     sizeMm: d.sizeMm,
     labelPos: d.labelPos,
     fontId: d.fontId,
@@ -485,28 +487,59 @@ const bundleRowToStub = (key, value) => {
   };
 };
 
-// 인덱스 로드 (썸네일 stub). auth._adminTargetId 있으면 관리자로 해당 유저 것 조회.
+// 인덱스 로드 (썸네일 stub). 인덱스 행(aac_history_index:)만 읽어 가벼움.
+//  - 일반 선생님: 본인 것만 (RLS)
+//  - 관리자: 모든 선생님의 인덱스를 admin_get_aac_data 로 수집 (owner별 폴더뷰용)
+//  - auth._adminTargetId: 특정 선생님 하나만 (관리자 대리 조회)
 const loadHistoryIndex = async (auth) => {
   if (!auth) return [];
+
+  // 관리자: 전체 선생님 순회 수집
+  if (auth.role === 'admin' && !auth._adminTargetId) {
+    const users = await adminListUsers();
+    const teachers = users || [];
+    const collected = [];
+    for (const t of teachers) {
+      try {
+        const rows = await adminGetAacData(t.user_id);
+        const ownerLabel = t.email || '';
+        const ownerName = t.display_name || (t.email ? t.email.split('@')[0] : '');
+        (rows || [])
+          .filter(r => r.key && r.key.startsWith(HISTORY_INDEX_PREFIX))
+          .forEach(r => {
+            const stub = indexRowToStub(r.key, r.value);
+            stub.ownerUsername = ownerLabel; // 폴더 그룹핑 키(계정 기준)
+            stub.ownerName = stub.ownerName || ownerName;
+            stub._ownerId = t.user_id; // 본문 로드 시 admin_get_aac_data 대상
+            collected.push(stub);
+          });
+      } catch (e) { /* 개별 선생님 실패는 건너뜀 */ }
+    }
+    return collected.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  }
+
+  // 특정 선생님 하나만 (관리자 대리 조회) 또는 일반 선생님 본인 것
   let rows = [];
   if (auth._adminTargetId) {
     const all = await adminGetAacData(auth._adminTargetId);
-    rows = (all || []).filter(r => r.key && r.key.startsWith(HISTORY_ITEM_PREFIX));
+    rows = (all || []).filter(r => r.key && r.key.startsWith(HISTORY_INDEX_PREFIX));
   } else {
-    const res = await dataList(HISTORY_ITEM_PREFIX);
+    const res = await dataList(HISTORY_INDEX_PREFIX);
     rows = res.rows || [];
   }
   return rows
-    .map(r => bundleRowToStub(r.key, r.value))
+    .map(r => indexRowToStub(r.key, r.value))
     .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 };
 
-// 특정 묶음 본문 로드
-const loadHistoryItem = async (id, auth) => {
+// 특정 묶음 본문 로드 (전체 카드) — 본문 행(aac_history_item:)만.
+//  ownerId 지정(관리자가 특정 선생님 카드 열람) 시 admin_get_aac_data 로 조회
+const loadHistoryItem = async (id, auth, ownerId) => {
   if (!auth) return null;
   let value = null;
-  if (auth._adminTargetId) {
-    const all = await adminGetAacData(auth._adminTargetId);
+  const targetId = ownerId || auth._adminTargetId;
+  if (targetId && auth.role === 'admin') {
+    const all = await adminGetAacData(targetId);
     const hit = (all || []).find(r => r.key === HISTORY_KEY(id));
     value = hit?.value || null;
   } else {
@@ -520,16 +553,15 @@ const loadHistoryItem = async (id, auth) => {
   } catch (e) { return { cards: [] }; }
 };
 
-// 묶음 추가/저장 (upsert)
+// 묶음 추가/저장 (upsert) — 인덱스 행 + 본문 행 2개로 분리 저장
 const addHistoryItem = async (snapshot, auth) => {
   if (!auth) return;
-  // 관리자 대리 조회 모드에선 저장하지 않음 (본인 데이터만 쓰기)
-  if (auth._adminTargetId) return;
+  if (auth._adminTargetId) return; // 관리자 대리 조회 모드에선 저장 안 함
   const now = new Date();
-  const payload = {
+  const cards = snapshot.cards || [];
+  const meta = {
     id: snapshot.id,
     title: snapshot.title || snapshot.name || '',
-    cards: snapshot.cards || [],
     sizeMm: snapshot.sizeMm,
     labelPos: snapshot.labelPos,
     fontId: snapshot.fontId,
@@ -537,32 +569,38 @@ const addHistoryItem = async (snapshot, auth) => {
     categoryId: snapshot.categoryId,
     ownerUsername: auth.email || '',
     ownerName: auth.name || '',
-    cardCount: snapshot.cards?.length || 0,
+    cardCount: cards.length,
+    // 썸네일 최대 4장 (목록 미리보기용)
+    thumbnails: cards.slice(0, 4).map(c => c.image).filter(Boolean),
     createdAt: snapshot.date || now.toISOString(),
     timestamp: snapshot.timestamp || now.getTime(),
   };
-  const r = await dataSet(HISTORY_KEY(snapshot.id), JSON.stringify(payload));
-  if (!r) devWarn('saveBundle 실패:', snapshot.id);
+  // 본문: 전체 카드
+  const body = { id: snapshot.id, cards };
+  const r1 = await dataSet(HISTORY_KEY(snapshot.id), JSON.stringify(body));
+  const r2 = await dataSet(HISTORY_IDX_KEY(snapshot.id), JSON.stringify(meta));
+  if (!r1 || !r2) devWarn('saveBundle 실패:', snapshot.id);
 };
 
-// 묶음 삭제
+// 묶음 삭제 — 인덱스 행 + 본문 행 둘 다 제거
 const deleteHistoryItem = async (id, auth) => {
   if (!auth || auth._adminTargetId) return;
-  const r = await dataDelete(HISTORY_KEY(id));
-  if (!r) devWarn('deleteBundle 실패:', id);
+  const r1 = await dataDelete(HISTORY_KEY(id));
+  const r2 = await dataDelete(HISTORY_IDX_KEY(id));
+  if (!r1 && !r2) devWarn('deleteBundle 실패:', id);
 };
 
-// 묶음 메타 업데이트 (이름/카테고리 변경) - 본문 가져와 메타만 갱신 후 재저장
+// 묶음 메타 업데이트 (이름/카테고리 변경) — 인덱스 행만 갱신 (본문 카드는 그대로)
 const updateHistoryMeta = async (id, updates, auth) => {
   if (!auth || auth._adminTargetId) return;
-  const row = await dataGet(HISTORY_KEY(id));
-  if (!row?.value) { devWarn('updateMeta: 묶음 조회 실패'); return; }
+  const row = await dataGet(HISTORY_IDX_KEY(id));
+  if (!row?.value) { devWarn('updateMeta: 인덱스 조회 실패'); return; }
   let d = {};
   try { d = JSON.parse(row.value) || {}; } catch (e) { return; }
   if (updates.title !== undefined) d.title = updates.title;
   else if (updates.name !== undefined) d.title = updates.name;
   if (updates.categoryId !== undefined) d.categoryId = updates.categoryId;
-  const r = await dataSet(HISTORY_KEY(id), JSON.stringify(d));
+  const r = await dataSet(HISTORY_IDX_KEY(id), JSON.stringify(d));
   if (!r) devWarn('updateMeta 실패:', id);
 };
 
@@ -571,12 +609,13 @@ const moveHistoryToTop = async (id, newDate, newTimestamp, auth) => {
   devLog('moveHistoryToTop: 클라이언트 UI 정렬만 처리');
 };
 
-// 전체 비우기 (본인 것만. 관리자 대리 모드에선 동작 안 함)
+// 전체 비우기 (본인 것만) — 인덱스+본문 행 모두 제거
 const clearHistory = async (ownerFilter, auth) => {
   if (!auth || auth._adminTargetId) return;
-  const res = await dataList(HISTORY_ITEM_PREFIX);
-  const rows = res.rows || [];
-  await Promise.all(rows.map(r => dataDelete(r.key).catch(() => {})));
+  const idxRes = await dataList(HISTORY_INDEX_PREFIX);
+  const itemRes = await dataList(HISTORY_ITEM_PREFIX);
+  const keys = [...(idxRes.rows || []), ...(itemRes.rows || [])].map(r => r.key);
+  await Promise.all(keys.map(k => dataDelete(k).catch(() => {})));
 };
 
 // 미리보기/iframe 환경에서 confirm/alert이 차단되는 경우 대비 안전 래퍼
@@ -3325,7 +3364,7 @@ export default function App() {
     // 인덱스 stub인 경우 본문 로드
     let cardsToAdd = snapshot.cards;
     if (snapshot._isStub) {
-      const item = await loadHistoryItem(snapshot.id, currentUser);
+      const item = await loadHistoryItem(snapshot.id, currentUser, snapshot._ownerId);
       if (!item || !Array.isArray(item.cards)) {
         safeAlert('이 묶음의 카드 데이터를 불러올 수 없습니다.');
         return;
@@ -3342,15 +3381,12 @@ export default function App() {
   const deleteFromHistory = async (id) => {
     const target = history.find(h => h.id === id);
     if (!target) return;
-    // 권한 체크: 관리자는 모두 삭제 가능, 선생님은 자기 것만
-    if (currentUser?.role !== 'admin' && target.ownerUsername !== currentUser?.email) {
-      safeAlert('다른 선생님의 묶음은 삭제할 수 없습니다.');
+    // 권한 체크: 삭제는 본인 소유 묶음만 (관리자도 남의 것은 조회만 가능)
+    if (target.ownerUsername !== currentUser?.email) {
+      safeAlert('다른 선생님의 묶음은 삭제할 수 없습니다. (조회만 가능)');
       return;
     }
-    // 확인창 없이 바로 삭제 (sandbox에서 confirm이 차단되어 멈추는 문제 회피)
-    // 즉시 화면에서 제거
     setHistory(prev => prev.filter(h => h.id !== id));
-    // 백그라운드로 저장소에서도 삭제 (실패해도 화면은 이미 갱신됨)
     try {
       await deleteHistoryItem(id, currentUser);
     } catch (e) {
@@ -3361,15 +3397,16 @@ export default function App() {
   const renameHistory = async (id, currentName) => {
     const target = history.find(h => h.id === id);
     if (!target) return;
-    if (currentUser?.role !== 'admin' && target.ownerUsername !== currentUser?.email) {
-      safeAlert('다른 선생님의 묶음은 이름을 바꿀 수 없습니다.');
+    // 이름변경도 본인 소유만
+    if (target.ownerUsername !== currentUser?.email) {
+      safeAlert('다른 선생님의 묶음은 이름을 바꿀 수 없습니다. (조회만 가능)');
       return;
     }
     const newName = safePrompt('이 묶음의 이름을 정해주세요:', currentName);
     if (newName === null) return;
     const trimmed = newName.trim();
     if (!trimmed) return;
-    await updateHistoryMeta(id, { name: trimmed.slice(0, 30, currentUser) });
+    await updateHistoryMeta(id, { name: trimmed.slice(0, 30) });
     await refreshHistory();
   };
 
@@ -3406,7 +3443,7 @@ export default function App() {
     // stub이면 본문 로드
     let cards = h.cards;
     if (h._isStub) {
-      const item = await loadHistoryItem(h.id, currentUser);
+      const item = await loadHistoryItem(h.id, currentUser, h._ownerId);
       if (!item || !Array.isArray(item.cards)) {
         safeAlert('본문을 불러올 수 없습니다.');
         return;
@@ -3430,7 +3467,7 @@ export default function App() {
     // 모든 묶음의 본문 로드 (병렬)
     const withCards = await Promise.all(myHistory.map(async (h) => {
       if (h._isStub) {
-        const item = await loadHistoryItem(h.id, currentUser);
+        const item = await loadHistoryItem(h.id, currentUser, h._ownerId);
         return { ...h, cards: item?.cards || [] };
       }
       return h;
@@ -3874,6 +3911,7 @@ export default function App() {
                                             >
                                               <Share2 className="w-3.5 h-3.5" />
                                             </button>
+                                            {isMine && (
                                             <button
                                               onClick={() => renameHistory(h.id, h.name)}
                                               className="p-2 bg-white hover:bg-stone-100 border border-stone-200 text-stone-600 rounded transition flex-shrink-0"
@@ -3881,6 +3919,8 @@ export default function App() {
                                             >
                                               <Pencil className="w-3.5 h-3.5" />
                                             </button>
+                                            )}
+                                            {isMine && (
                                             <button
                                               onClick={() => deleteFromHistory(h.id)}
                                               className="p-2 bg-white hover:bg-red-50 hover:border-red-200 border border-stone-200 text-stone-600 hover:text-red-500 rounded transition flex-shrink-0"
@@ -3888,6 +3928,7 @@ export default function App() {
                                             >
                                               <Trash2 className="w-3.5 h-3.5" />
                                             </button>
+                                            )}
                                           </div>
                                         </div>
                                       ))}
