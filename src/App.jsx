@@ -45,37 +45,6 @@ const LOGO_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHsAAACACAY
 // 로그인 시스템: 관리자가 선생님 계정 등록/관리
 // ============================================================
 
-// ───── 인증 설정 ─────
-const AUTH_SALT = 'kdaba_aac_2026';
-const AUTH_STORAGE_KEY = 'aac_auth_session';
-const AUTH_USERS_KEY = 'aac_users_db';
-
-// ─────────────────────────────────────────────────────────────
-// Supabase Edge Function 인증 (디바이스 간 공유)
-// ─────────────────────────────────────────────────────────────
-// anon key는 GitHub에 노출되어도 안전한 "public" 키
-// 실제 인증은 Edge Function이 service_role로 검증
-const SUPABASE_URL = 'https://vdubgrxwijydwfabwpnk.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZkdWJncnh3aWp5ZHdmYWJ3cG5rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MDk1ODgsImV4cCI6MjA5NzE4NTU4OH0.nqNO3vany3M6fzmG5BG6QVdvi8BW2UbhTDhxNnwvA88';
-const AUTH_ENDPOINT = `${SUPABASE_URL}/functions/v1/aac-auth-`;
-
-const callAuthFn = async (payload) => {
-  try {
-    const res = await fetch(AUTH_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    return await res.json();
-  } catch (e) {
-    return { ok: false, error: '네트워크 오류: ' + (e?.message || String(e)) };
-  }
-};
-
 // ─────────────────────────────────────────────────────────────
 // 디버그 로그 토글
 // ─────────────────────────────────────────────────────────────
@@ -87,6 +56,256 @@ const devLog = (...args) => { if (DEBUG) console.log(...args); };
 const devWarn = (...args) => { if (DEBUG) console.warn(...args); };
 const devError = (...args) => { if (DEBUG) console.error(...args); };
 const devInfo = (...args) => { if (DEBUG) console.info(...args); };
+
+// =====================================================================
+// Supabase 연결 설정 (A방식: Supabase Auth + RLS)
+// anon/URL은 빌드 시 GitHub Secrets → Vite env 로 주입 (소스에 비번/키 하드코딩 없음)
+// =====================================================================
+const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY || '';
+
+// =====================================================================
+// Auth 세션 관리 (Supabase Auth) — sessionStorage 기반 (탭 닫으면 로그아웃)
+// =====================================================================
+const AUTH_SESSION_KEY = 'sb-auth-session';
+
+function getStoredSession() {
+  try {
+    const raw = sessionStorage.getItem(AUTH_SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    // 만료 확인 (5분 여유 → refresh 필요 판단)
+    if (s.expires_at && s.expires_at * 1000 < Date.now() + 5 * 60 * 1000) return null;
+    return s;
+  } catch (e) { return null; }
+}
+
+function saveSession(session) {
+  try {
+    if (session) sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
+    else sessionStorage.removeItem(AUTH_SESSION_KEY);
+    // 과거 localStorage 자동로그인 흔적 제거 (보안)
+    localStorage.removeItem(AUTH_SESSION_KEY);
+  } catch (e) {}
+}
+
+async function refreshSession(refreshToken) {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    if (data.access_token) { saveSession(data); return data; }
+    return null;
+  } catch (e) { return null; }
+}
+
+async function getValidAccessToken() {
+  let session = getStoredSession();
+  if (session?.access_token) return session.access_token;
+  const raw = sessionStorage.getItem(AUTH_SESSION_KEY);
+  if (raw) {
+    try {
+      const old = JSON.parse(raw);
+      if (old.refresh_token) {
+        const refreshed = await refreshSession(old.refresh_token);
+        if (refreshed?.access_token) return refreshed.access_token;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function authHeaders() {
+  const token = await getValidAccessToken();
+  return {
+    'apikey': SUPABASE_ANON_KEY,
+    'Authorization': token ? `Bearer ${token}` : `Bearer ${SUPABASE_ANON_KEY}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+// =====================================================================
+// Auth API
+// =====================================================================
+async function signInWithPassword(email, password) {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await r.json();
+    if (!r.ok) return { error: data.error_description || data.msg || data.error || '로그인 실패' };
+    saveSession(data);
+    return { session: data, user: data.user };
+  } catch (e) { return { error: '네트워크 오류: ' + e.message }; }
+}
+
+async function signOutAuth() {
+  try {
+    const token = await getValidAccessToken();
+    if (token) {
+      await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+        method: 'POST',
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${token}` },
+      });
+    }
+  } catch (e) {}
+  saveSession(null);
+}
+
+async function getCurrentAuthUser() {
+  try {
+    const token = await getValidAccessToken();
+    if (!token) return null;
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${token}` },
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+// 관리자 여부 (is_admin() RPC — 공유 인프라)
+async function checkIsAdmin() {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/is_admin`, {
+      method: 'POST', headers, body: '{}',
+    });
+    if (!r.ok) return false;
+    return (await r.json()) === true;
+  } catch (e) { return false; }
+}
+
+// =====================================================================
+// 관리자용 사용자 관리 (admin-users Edge Function + admin_list_users RPC — 공유 인프라)
+// =====================================================================
+async function adminCreateUser(email, password, displayName) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/admin-users`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ action: 'create', email, password, display_name: displayName || email.split('@')[0] }),
+    });
+    const data = await r.json();
+    if (!r.ok) return { error: data.error || '계정 생성 실패' };
+    return { user: data.user };
+  } catch (e) { return { error: '네트워크 오류: ' + e.message }; }
+}
+
+async function adminDeleteUser(userId) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/admin-users`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ action: 'delete', user_id: userId }),
+    });
+    if (!r.ok) { const data = await r.json().catch(() => ({})); return { error: data.error || '삭제 실패' }; }
+    return { ok: true };
+  } catch (e) { return { error: '네트워크 오류: ' + e.message }; }
+}
+
+async function adminUpdateUserPassword(userId, newPassword) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/admin-users`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ action: 'update_password', user_id: userId, password: newPassword }),
+    });
+    const data = await r.json();
+    if (!r.ok) return { error: data.error || '비번 변경 실패' };
+    return { ok: true };
+  } catch (e) { return { error: '네트워크 오류: ' + e.message }; }
+}
+
+async function adminListUsers() {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/admin_list_users`, {
+      method: 'POST', headers, body: '{}',
+    });
+    if (!r.ok) return [];
+    return await r.json();
+  } catch (e) { return []; }
+}
+
+// 관리자용: 특정 유저의 aac_data 전체 조회 (admin_get_aac_data RPC)
+async function adminGetAacData(userId) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/admin_get_aac_data`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ target_user_id: userId }),
+    });
+    if (!r.ok) return [];
+    return await r.json();
+  } catch (e) { return []; }
+}
+
+// =====================================================================
+// 데이터 저장/조회 (aac_data 테이블 — RLS로 본인 데이터만 접근)
+// 스키마: (user_id uuid, key text, value text, updated_at) — SCERTS v2 scerts_data 동일
+// =====================================================================
+async function dataGet(key, userIdOverride) {
+  try {
+    const headers = await authHeaders();
+    let uid = userIdOverride;
+    if (!uid) { const u = await getCurrentAuthUser(); uid = u?.id; }
+    if (!uid) return null;
+    const url = `${SUPABASE_URL}/rest/v1/aac_data?user_id=eq.${uid}&key=eq.${encodeURIComponent(key)}&select=key,value`;
+    const r = await fetch(url, { headers });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    if (rows && rows.length > 0) return { key: rows[0].key, value: rows[0].value };
+    return null;
+  } catch (e) { return null; }
+}
+
+async function dataSet(key, value) {
+  try {
+    const headers = await authHeaders();
+    const u = await getCurrentAuthUser();
+    if (!u?.id) return null;
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/aac_data`, {
+      method: 'POST',
+      headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ user_id: u.id, key, value, updated_at: new Date().toISOString() }),
+    });
+    if (!r.ok) return null;
+    return { key, value };
+  } catch (e) { return null; }
+}
+
+async function dataDelete(key) {
+  try {
+    const headers = await authHeaders();
+    const u = await getCurrentAuthUser();
+    if (!u?.id) return null;
+    const url = `${SUPABASE_URL}/rest/v1/aac_data?user_id=eq.${u.id}&key=eq.${encodeURIComponent(key)}`;
+    await fetch(url, { method: 'DELETE', headers });
+    return { key, deleted: true };
+  } catch (e) { return null; }
+}
+
+async function dataList(prefix, userIdOverride) {
+  try {
+    const headers = await authHeaders();
+    let uid = userIdOverride;
+    if (!uid) { const u = await getCurrentAuthUser(); uid = u?.id; }
+    if (!uid) return { keys: [] };
+    const filter = prefix ? `&key=like.${encodeURIComponent(prefix)}*` : '';
+    const url = `${SUPABASE_URL}/rest/v1/aac_data?user_id=eq.${uid}&select=key,value${filter}`;
+    const r = await fetch(url, { headers });
+    if (!r.ok) return { keys: [], rows: [] };
+    const rows = await r.json();
+    return { keys: (rows || []).map((row) => row.key), rows: rows || [] };
+  } catch (e) { return { keys: [], rows: [] }; }
+}
 
 // 히스토리: 인덱스 + 개별 묶음 분리 저장
 const HISTORY_INDEX_KEY = 'aac_history_index';
@@ -230,137 +449,134 @@ const summarizeForIndex = (snapshot) => ({
   thumbnails: (snapshot.cards || []).slice(0, 4).map(c => c.image).filter(Boolean),
 });
 
-// 인덱스만 빨리 로드 (썸네일로 표시)
-// auth: { username, passwordHash } - 관리자면 모든 사용자 묶음, 선생님이면 본인 것만 (서버에서 자동 필터)
+// ─────────────────────────────────────────────────────────────
+// 히스토리 저장 모델 (A방식 · aac_data)
+//   key   = 'aac_history_item:<id>'
+//   value = JSON { id, title, cards, sizeMm, labelPos, fontId, labelSize,
+//                  categoryId, ownerName, createdAt, timestamp }
+//   RLS가 본인(user_id) 것만 반환 → 별도 인덱스 키/owner 필터 불필요
+//   관리자가 특정 선생님 것을 볼 때만 admin_get_aac_data(target) 사용
+// ─────────────────────────────────────────────────────────────
+const HISTORY_KEY = (id) => `${HISTORY_ITEM_PREFIX}${id}`;
+
+// row.value(JSON) → UI 인덱스 형식(stub) 매핑
+const bundleRowToStub = (key, value) => {
+  let d = {};
+  try { d = JSON.parse(value) || {}; } catch (e) { d = {}; }
+  const id = d.id || key.slice(HISTORY_ITEM_PREFIX.length);
+  const thumbs = (d.cards || []).slice(0, 4).map(c => c.image).filter(Boolean);
+  return {
+    id,
+    ownerUsername: d.ownerUsername || '',
+    ownerName: d.ownerName || '',
+    title: d.title || d.name || '',
+    name: d.title || d.name || '',
+    date: d.createdAt || d.date || '',
+    timestamp: d.timestamp || (d.createdAt ? new Date(d.createdAt).getTime() : 0),
+    cardCount: d.cardCount != null ? d.cardCount : (d.cards?.length || 0),
+    sizeMm: d.sizeMm,
+    labelPos: d.labelPos,
+    fontId: d.fontId,
+    labelSize: d.labelSize,
+    categoryId: d.categoryId,
+    thumbnails: thumbs,
+    cards: thumbs.length ? [{ image: thumbs[0], label: '' }] : [],
+    _isStub: true,
+  };
+};
+
+// 인덱스 로드 (썸네일 stub). auth._adminTargetId 있으면 관리자로 해당 유저 것 조회.
 const loadHistoryIndex = async (auth) => {
   if (!auth) return [];
-  const result = await callAuthFn({
-    action: 'listBundles',
-    username: auth.username,
-    password_hash: auth.passwordHash,
-  });
-  if (!result.ok) {
-    devWarn('listBundles 실패:', result.error);
-    return [];
+  let rows = [];
+  if (auth._adminTargetId) {
+    const all = await adminGetAacData(auth._adminTargetId);
+    rows = (all || []).filter(r => r.key && r.key.startsWith(HISTORY_ITEM_PREFIX));
+  } else {
+    const res = await dataList(HISTORY_ITEM_PREFIX);
+    rows = res.rows || [];
   }
-  // bundles 배열을 기존 UI 형식과 호환되게 매핑
-  return (result.bundles || []).map(b => ({
-    id: b.id,
-    ownerUsername: b.owner_username,
-    title: b.title || '',
-    date: b.created_at,
-    timestamp: new Date(b.created_at).getTime(),
-    cardCount: b.card_count,
-    sizeMm: b.size_mm,
-    categoryId: b.category_id,
-    thumbnails: b.thumbnail ? [b.thumbnail] : [],
-    cards: b.thumbnail ? [{ image: b.thumbnail, label: '' }] : [],
-    _isStub: true, // 본문 미로딩 표시
-  }));
+  return rows
+    .map(r => bundleRowToStub(r.key, r.value))
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 };
 
-// 특정 묶음 본문 로드 (필요 시점에 호출)
+// 특정 묶음 본문 로드
 const loadHistoryItem = async (id, auth) => {
   if (!auth) return null;
-  const result = await callAuthFn({
-    action: 'getBundle',
-    username: auth.username,
-    password_hash: auth.passwordHash,
-    bundle_id: id,
-  });
-  if (!result.ok) {
-    devWarn('getBundle 실패:', result.error);
-    return null;
+  let value = null;
+  if (auth._adminTargetId) {
+    const all = await adminGetAacData(auth._adminTargetId);
+    const hit = (all || []).find(r => r.key === HISTORY_KEY(id));
+    value = hit?.value || null;
+  } else {
+    const row = await dataGet(HISTORY_KEY(id));
+    value = row?.value || null;
   }
-  return { cards: result.bundle?.data?.cards || [] };
+  if (!value) { devWarn('getBundle 실패: 없음', id); return null; }
+  try {
+    const d = JSON.parse(value) || {};
+    return { cards: d.cards || [] };
+  } catch (e) { return { cards: [] }; }
 };
 
-// 묶음 추가 (Supabase upsert - 동시성은 서버가 처리)
+// 묶음 추가/저장 (upsert)
 const addHistoryItem = async (snapshot, auth) => {
   if (!auth) return;
-  const thumbnail = snapshot.cards?.[0]?.image || null;
-  const r = await callAuthFn({
-    action: 'saveBundle',
-    username: auth.username,
-    password_hash: auth.passwordHash,
-    bundle_id: snapshot.id,
-    title: snapshot.title || '',
-    data: { cards: snapshot.cards },
-    thumbnail,
-    card_count: snapshot.cards?.length || 0,
-    size_mm: snapshot.sizeMm,
-    category_id: snapshot.categoryId,
-  });
-  if (!r.ok) devWarn('saveBundle 실패:', r.error);
+  // 관리자 대리 조회 모드에선 저장하지 않음 (본인 데이터만 쓰기)
+  if (auth._adminTargetId) return;
+  const now = new Date();
+  const payload = {
+    id: snapshot.id,
+    title: snapshot.title || snapshot.name || '',
+    cards: snapshot.cards || [],
+    sizeMm: snapshot.sizeMm,
+    labelPos: snapshot.labelPos,
+    fontId: snapshot.fontId,
+    labelSize: snapshot.labelSize,
+    categoryId: snapshot.categoryId,
+    ownerUsername: auth.email || '',
+    ownerName: auth.name || '',
+    cardCount: snapshot.cards?.length || 0,
+    createdAt: snapshot.date || now.toISOString(),
+    timestamp: snapshot.timestamp || now.getTime(),
+  };
+  const r = await dataSet(HISTORY_KEY(snapshot.id), JSON.stringify(payload));
+  if (!r) devWarn('saveBundle 실패:', snapshot.id);
 };
 
 // 묶음 삭제
 const deleteHistoryItem = async (id, auth) => {
-  if (!auth) return;
-  const r = await callAuthFn({
-    action: 'deleteBundle',
-    username: auth.username,
-    password_hash: auth.passwordHash,
-    bundle_id: id,
-  });
-  if (!r.ok) devWarn('deleteBundle 실패:', r.error);
+  if (!auth || auth._adminTargetId) return;
+  const r = await dataDelete(HISTORY_KEY(id));
+  if (!r) devWarn('deleteBundle 실패:', id);
 };
 
-// 묶음 메타 업데이트 (이름 변경 등) - 서버에서 본문 가져와 메타만 갱신
+// 묶음 메타 업데이트 (이름/카테고리 변경) - 본문 가져와 메타만 갱신 후 재저장
 const updateHistoryMeta = async (id, updates, auth) => {
-  if (!auth) return;
-  const r1 = await callAuthFn({
-    action: 'getBundle',
-    username: auth.username,
-    password_hash: auth.passwordHash,
-    bundle_id: id,
-  });
-  if (!r1.ok || !r1.bundle) { devWarn('updateMeta: 묶음 조회 실패'); return; }
-  const b = r1.bundle;
-  // updates는 { title } 또는 { name } 둘 다 지원 (legacy 호환)
-  const newTitle = updates.title !== undefined ? updates.title : (updates.name !== undefined ? updates.name : b.title);
-  const r2 = await callAuthFn({
-    action: 'saveBundle',
-    username: auth.username,
-    password_hash: auth.passwordHash,
-    bundle_id: id,
-    title: newTitle || '',
-    data: b.data,
-    thumbnail: b.thumbnail,
-    card_count: b.card_count,
-    size_mm: b.size_mm,
-    category_id: updates.categoryId !== undefined ? updates.categoryId : b.category_id,
-  });
-  if (!r2.ok) devWarn('updateMeta 실패:', r2.error);
+  if (!auth || auth._adminTargetId) return;
+  const row = await dataGet(HISTORY_KEY(id));
+  if (!row?.value) { devWarn('updateMeta: 묶음 조회 실패'); return; }
+  let d = {};
+  try { d = JSON.parse(row.value) || {}; } catch (e) { return; }
+  if (updates.title !== undefined) d.title = updates.title;
+  else if (updates.name !== undefined) d.title = updates.name;
+  if (updates.categoryId !== undefined) d.categoryId = updates.categoryId;
+  const r = await dataSet(HISTORY_KEY(id), JSON.stringify(d));
+  if (!r) devWarn('updateMeta 실패:', id);
 };
 
-// 묶음 순서 변경 - Supabase에선 created_at 기준 정렬 자동. 클라이언트 측에서만 처리.
+// 묶음 순서 변경 - timestamp 기준 정렬. UI 즉시 반영만 (재저장 불필요).
 const moveHistoryToTop = async (id, newDate, newTimestamp, auth) => {
-  // Supabase created_at은 INSERT 시점 기준. UI에선 클라이언트 정렬로 즉시 반영 가능.
-  // 별도 서버 호출은 불필요 (새로고침 후엔 원래 created_at 순서로 복원됨)
   devLog('moveHistoryToTop: 클라이언트 UI 정렬만 처리');
 };
 
-// 전체 비우기 (관리자: 옵션으로 특정 사용자 것만 / 선생님: 본인 것만)
+// 전체 비우기 (본인 것만. 관리자 대리 모드에선 동작 안 함)
 const clearHistory = async (ownerFilter, auth) => {
-  if (!auth) return;
-  const result = await callAuthFn({
-    action: 'listBundles',
-    username: auth.username,
-    password_hash: auth.passwordHash,
-  });
-  if (!result.ok) return;
-  const targets = ownerFilter
-    ? (result.bundles || []).filter(b => b.owner_username === ownerFilter)
-    : (result.bundles || []);
-  await Promise.all(targets.map(b =>
-    callAuthFn({
-      action: 'deleteBundle',
-      username: auth.username,
-      password_hash: auth.passwordHash,
-      bundle_id: b.id,
-    }).catch(() => {})
-  ));
+  if (!auth || auth._adminTargetId) return;
+  const res = await dataList(HISTORY_ITEM_PREFIX);
+  const rows = res.rows || [];
+  await Promise.all(rows.map(r => dataDelete(r.key).catch(() => {})));
 };
 
 // 미리보기/iframe 환경에서 confirm/alert이 차단되는 경우 대비 안전 래퍼
@@ -427,28 +643,7 @@ const safePrompt = (msg, defaultVal = '') => {
   }
 };
 
-// SHA-256 해싱 (브라우저 내장 Web Crypto API 사용)
-const hashPassword = async (password) => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(AUTH_SALT + password);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-};
-
-// 초기 사용자 (코드에 하드코딩 - 관리자 1명)
-// 관리자: 민다혜 / abageomdan1121
-// 비번 바꾸려면 새 비번을 hashPassword 돌려서 해시 받아 교체
-const INITIAL_USERS = [
-  {
-    username: '민다혜',
-    name: '민다혜',
-    role: 'admin',
-    // abageomdan1121 의 해시
-    passwordHash: '3fa9760732468d2b8ee5afa67d077bf382543fe76119d684aa7a4f9d2b3d0f77',
-    createdAt: '2026-01-01',
-  },
-];
+// (A방식: 비밀번호 해싱/하드코딩 관리자 계정 제거됨 — Supabase Auth가 인증 전담)
 
 // ============================================================
 
@@ -1080,7 +1275,7 @@ const PrintCard = ({ card, sizeMm, labelPos, font, labelSize, showCutLines, cutL
 // 로그인 화면
 // ─────────────────────────────────────────────────────────────
 const LoginScreen = ({ onLogin }) => {
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
@@ -1089,33 +1284,27 @@ const LoginScreen = ({ onLogin }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    if (!username.trim() || !password) {
-      setError('아이디와 비밀번호를 입력해주세요.');
+    if (!email.trim() || !password) {
+      setError('이메일과 비밀번호를 입력해주세요.');
       return;
     }
 
     setLoading(true);
     try {
-      // 비밀번호 해시 (클라이언트에서 처리 - 평문 전송 방지)
-      const inputHash = await hashPassword(password);
-      // Supabase Edge Function 'aac-auth'에서 사용자 검증 (모든 디바이스에서 공유)
-      const result = await callAuthFn({
-        action: 'login',
-        username: username.trim(),
-        password_hash: inputHash,
-      });
-      if (!result.ok) {
-        setError(result.error || '아이디 또는 비밀번호가 올바르지 않습니다.');
+      // Supabase Auth 로그인 (이메일+비번). 비번은 Auth가 서버에서 검증.
+      const result = await signInWithPassword(email.trim(), password);
+      if (result.error || !result.user) {
+        setError(result.error || '이메일 또는 비밀번호가 올바르지 않습니다.');
         setLoading(false);
         return;
       }
-      // 로그인 성공 - passwordHash는 메모리에만 보관 (사용자 관리 시 admin 인증에 필요)
-      // 세션 localStorage엔 password_hash 저장 안 됨 (Login 시점에만 받음)
+      const u = result.user;
+      const isAdmin = await checkIsAdmin();
       onLogin({
-        username: result.user.username,
-        role: result.user.role,
-        name: result.user.name || result.user.username, // 표시용 이름 (없으면 아이디로 폴백)
-        passwordHash: inputHash, // 메모리 보관용 (사용자 관리 API 호출 시 admin 인증)
+        id: u.id,
+        email: u.email,
+        role: isAdmin ? 'admin' : 'teacher',
+        name: u.user_metadata?.display_name || u.email?.split('@')[0] || u.email,
       });
     } catch (err) {
       setError('로그인 처리 중 오류가 발생했습니다.');
@@ -1153,18 +1342,17 @@ const LoginScreen = ({ onLogin }) => {
             <input type="text" name="username" tabIndex={-1} aria-hidden="true" autoComplete="username" style={{ position: 'absolute', opacity: 0, height: 0, width: 0, pointerEvents: 'none', zIndex: -1 }} />
             <input type="password" name="password" tabIndex={-1} aria-hidden="true" autoComplete="current-password" style={{ position: 'absolute', opacity: 0, height: 0, width: 0, pointerEvents: 'none', zIndex: -1 }} />
             <div>
-              <label className="text-[11px] font-semibold text-stone-500 uppercase tracking-wider mb-1.5 block">아이디</label>
+              <label className="text-[11px] font-semibold text-stone-500 uppercase tracking-wider mb-1.5 block">이메일</label>
               <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSubmit(e)}
                 autoFocus
                 autoComplete="off"
-                lang="ko"
-                inputMode="text"
+                inputMode="email"
                 className="w-full px-3 py-2.5 bg-stone-50 border border-stone-200 rounded-lg text-sm text-stone-800 outline-none focus:bg-white focus:border-amber-300 focus:ring-2 focus:ring-amber-100"
-                placeholder="아이디 (한글/영문)"
+                placeholder="이메일 주소"
               />
             </div>
 
@@ -1233,28 +1421,20 @@ const LoginScreen = ({ onLogin }) => {
 // ─────────────────────────────────────────────────────────────
 const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newUser, setNewUser] = useState({ username: '', name: '', password: '' });
+  const [newUser, setNewUser] = useState({ email: '', name: '', password: '' });
   const [error, setError] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [resetPwUser, setResetPwUser] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // 컴포넌트 마운트 시 Edge Function에서 사용자 목록 가져오기
+  // 컴포넌트 마운트 시 admin_list_users RPC로 사용자 목록 가져오기
   useEffect(() => {
     let cancelled = false;
     const loadUsers = async () => {
       setLoading(true);
-      const result = await callAuthFn({
-        action: 'list',
-        admin_username: currentUser.username,
-        admin_password_hash: currentUser.passwordHash,
-      });
+      const list = await adminListUsers();
       if (cancelled) return;
-      if (result.ok) {
-        onUpdate(result.users);
-      } else {
-        setError(result.error || '사용자 목록 불러오기 실패');
-      }
+      onUpdate(list || []);
       setLoading(false);
     };
     loadUsers();
@@ -1264,95 +1444,68 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
 
   const addUser = async () => {
     setError('');
-    const u = newUser.username.trim();
-    const n = newUser.name.trim() || u; // name 비어있으면 username으로 대체
+    const em = newUser.email.trim();
+    const n = newUser.name.trim() || em.split('@')[0];
     const p = newUser.password;
 
-    if (!u || !p) {
-      setError('아이디와 비밀번호를 입력해주세요.');
+    if (!em || !p) {
+      setError('이메일과 비밀번호를 입력해주세요.');
       return;
     }
-    if (u.length < 2) {
-      setError('아이디는 2자 이상이어야 합니다.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
+      setError('올바른 이메일 형식이 아닙니다.');
       return;
     }
-    if (p.length < 4) {
-      setError('비밀번호는 4자 이상이어야 합니다.');
+    if (p.length < 6) {
+      setError('비밀번호는 6자 이상이어야 합니다.');
       return;
     }
-    if (users.some(usr => usr.username === u)) {
-      setError('이미 존재하는 아이디입니다.');
+    if (users.some(usr => usr.email === em)) {
+      setError('이미 등록된 이메일입니다.');
       return;
     }
 
-    const passwordHash = await hashPassword(p);
-    // Edge Function 'create' 호출 (Supabase aac_users에 INSERT + 최신 목록 반환)
-    const result = await callAuthFn({
-      action: 'create',
-      admin_username: currentUser.username,
-      admin_password_hash: currentUser.passwordHash,
-      new_username: u,
-      new_password_hash: passwordHash,
-      new_role: 'teacher',
-    });
-    if (!result.ok) {
+    const result = await adminCreateUser(em, p, n);
+    if (result.error) {
       setError(result.error || '추가 실패');
       return;
     }
-    onUpdate(result.users); // 최신 목록 (password_hash 제외된 안전 데이터)
-    setNewUser({ username: '', name: '', password: '' });
+    const list = await adminListUsers();
+    onUpdate(list || []);
+    setNewUser({ email: '', name: '', password: '' });
     setShowAddForm(false);
-    safeAlert(`"${n}" 선생님 계정이 추가되었습니다.\n아이디: ${u}\n비밀번호: ${p}\n\n선생님께 안전하게 전달해주세요.`);
+    safeAlert(`"${n}" 선생님 계정이 추가되었습니다.\n이메일: ${em}\n비밀번호: ${p}\n\n선생님께 안전하게 전달해주세요.`);
   };
 
-  const deleteUser = async (username) => {
-    if (username === currentUser.username) {
+  const deleteUser = async (userId, displayName) => {
+    if (userId === currentUser.id) {
       safeAlert('자기 자신은 삭제할 수 없습니다.');
       return;
     }
-    if (username === '민다혜') {
-      safeAlert('기본 관리자 계정은 삭제할 수 없습니다.');
-      return;
-    }
-    const target = users.find(u => u.username === username);
-    if (!target) return;
-    const displayName = target.name || target.username;
-    if (!safeConfirm(`"${displayName}" (${username}) 계정을 정말 삭제할까요?`)) return;
-    // Edge Function 'delete' 호출
-    const result = await callAuthFn({
-      action: 'delete',
-      admin_username: currentUser.username,
-      admin_password_hash: currentUser.passwordHash,
-      target_username: username,
-    });
-    if (!result.ok) {
+    if (!safeConfirm(`"${displayName}" 계정을 정말 삭제할까요?`)) return;
+    const result = await adminDeleteUser(userId);
+    if (result.error) {
       safeAlert(result.error || '삭제 실패');
       return;
     }
-    onUpdate(result.users);
+    const list = await adminListUsers();
+    onUpdate(list || []);
   };
 
   const resetPassword = async (user, newPassword) => {
-    if (!newPassword || newPassword.length < 4) {
-      safeAlert('비밀번호는 4자 이상이어야 합니다.');
+    if (!newPassword || newPassword.length < 6) {
+      safeAlert('비밀번호는 6자 이상이어야 합니다.');
       return;
     }
-    const passwordHash = await hashPassword(newPassword);
-    // Edge Function 'resetPassword' 호출
-    const result = await callAuthFn({
-      action: 'resetPassword',
-      admin_username: currentUser.username,
-      admin_password_hash: currentUser.passwordHash,
-      target_username: user.username,
-      new_password_hash: passwordHash,
-    });
-    if (!result.ok) {
+    const result = await adminUpdateUserPassword(user.user_id, newPassword);
+    if (result.error) {
       safeAlert(result.error || '비밀번호 변경 실패');
       return;
     }
-    onUpdate(result.users);
+    const list = await adminListUsers();
+    onUpdate(list || []);
     setResetPwUser(null);
-    const displayName = user.name || user.username;
+    const displayName = user.display_name || user.email;
     safeAlert(`"${displayName}" 선생님의 비밀번호가 변경되었습니다.\n새 비밀번호: ${newPassword}`);
   };
 
@@ -1391,13 +1544,13 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
               </h3>
               <div className="grid grid-cols-2 gap-2 mb-2">
                 <div>
-                  <label className="text-[10px] font-semibold text-stone-600 uppercase block mb-1">아이디</label>
+                  <label className="text-[10px] font-semibold text-stone-600 uppercase block mb-1">이메일</label>
                   <input
-                    type="text"
-                    value={newUser.username}
-                    onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                    type="email"
+                    value={newUser.email}
+                    onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
                     className="w-full px-2.5 py-2 bg-white border border-stone-200 rounded-lg text-xs outline-none focus:border-amber-400"
-                    placeholder="영문/숫자 3자 이상"
+                    placeholder="teacher@example.com"
                   />
                 </div>
                 <div>
@@ -1418,7 +1571,7 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
                   value={newUser.password}
                   onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
                   className="w-full px-2.5 py-2 bg-white border border-stone-200 rounded-lg text-xs outline-none focus:border-amber-400"
-                  placeholder="4자 이상 (선생님께 알려줄 비밀번호)"
+                  placeholder="6자 이상 (선생님께 알려줄 비밀번호)"
                 />
               </div>
               {error && (
@@ -1432,7 +1585,7 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
                   추가
                 </button>
                 <button
-                  onClick={() => { setShowAddForm(false); setNewUser({ username: '', name: '', password: '' }); setError(''); }}
+                  onClick={() => { setShowAddForm(false); setNewUser({ email: '', name: '', password: '' }); setError(''); }}
                   className="px-4 py-2 bg-white border border-stone-200 hover:bg-stone-50 text-stone-600 text-xs font-medium rounded-lg transition"
                 >
                   취소
@@ -1443,12 +1596,16 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
 
           {/* 사용자 목록 */}
           <div className="space-y-2">
-            {users.map((u) => (
-              <div key={u.username} className="bg-stone-50 hover:bg-white rounded-xl p-3 border border-stone-200 transition">
+            {users.map((u) => {
+              const isAdminUser = u.email === 'abageomdan@gmail.com';
+              const isMe = u.user_id === currentUser.id;
+              const dispName = u.display_name || u.email;
+              return (
+              <div key={u.user_id} className="bg-stone-50 hover:bg-white rounded-xl p-3 border border-stone-200 transition">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${u.role === 'admin' ? 'bg-amber-100' : 'bg-stone-200'}`}>
-                      {u.role === 'admin' ? (
+                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${isAdminUser ? 'bg-amber-100' : 'bg-stone-200'}`}>
+                      {isAdminUser ? (
                         <Shield className="w-4 h-4 text-amber-700" />
                       ) : (
                         <Users className="w-4 h-4 text-stone-600" />
@@ -1456,15 +1613,15 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <p className="text-sm font-bold text-stone-900 truncate">{u.name || u.username}</p>
-                        {u.username === currentUser.username && (
+                        <p className="text-sm font-bold text-stone-900 truncate">{dispName}</p>
+                        {isMe && (
                           <span className="text-[9px] font-semibold bg-amber-200 text-amber-800 rounded px-1.5 py-0.5">나</span>
                         )}
-                        {u.role === 'admin' && (
+                        {isAdminUser && (
                           <span className="text-[9px] font-semibold bg-stone-700 text-white rounded px-1.5 py-0.5">관리자</span>
                         )}
                       </div>
-                      <p className="text-[11px] text-stone-500">@{u.username} · 등록 {u.createdAt}</p>
+                      <p className="text-[11px] text-stone-500">{u.email} · 등록 {u.created_at ? u.created_at.slice(0, 10) : '-'}</p>
                     </div>
                   </div>
 
@@ -1476,9 +1633,9 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
                     >
                       <Lock className="w-3 h-3" />
                     </button>
-                    {u.username !== currentUser.username && u.username !== '민다혜' && (
+                    {!isMe && !isAdminUser && (
                       <button
-                        onClick={() => deleteUser(u.username)}
+                        onClick={() => deleteUser(u.user_id, dispName)}
                         className="px-2.5 py-1.5 bg-white hover:bg-red-50 border border-stone-200 hover:border-red-200 text-stone-600 hover:text-red-500 text-[11px] font-medium rounded transition"
                         title="삭제"
                       >
@@ -1489,24 +1646,24 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
                 </div>
 
                 {/* 비밀번호 재설정 폼 */}
-                {resetPwUser?.username === u.username && (
+                {resetPwUser?.user_id === u.user_id && (
                   <div className="mt-3 pt-3 border-t border-stone-200">
                     <label className="text-[10px] font-semibold text-stone-600 uppercase block mb-1.5">새 비밀번호</label>
                     <div className="flex gap-2">
                       <input
                         type="text"
                         autoFocus
-                        placeholder="새 비밀번호 입력"
+                        placeholder="새 비밀번호 입력 (6자 이상)"
                         className="flex-1 px-2.5 py-2 bg-white border border-stone-200 rounded-lg text-xs outline-none focus:border-amber-400"
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') resetPassword(u, e.target.value);
                           if (e.key === 'Escape') setResetPwUser(null);
                         }}
-                        id={`pw-input-${u.username}`}
+                        id={`pw-input-${u.user_id}`}
                       />
                       <button
                         onClick={() => {
-                          const input = document.getElementById(`pw-input-${u.username}`);
+                          const input = document.getElementById(`pw-input-${u.user_id}`);
                           if (input) resetPassword(u, input.value);
                         }}
                         className="px-3 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold rounded-lg transition"
@@ -1523,7 +1680,8 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -2472,36 +2630,27 @@ export default function App() {
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [authChecked, setAuthChecked] = useState(false); // 초기 세션 체크 완료 여부
 
-  // 앱 시작 시 세션 복원 (사용자 DB는 더 이상 클라이언트에 보관 안 함 - Edge Function 기반)
+  // 앱 시작 시 Auth 세션 복원 (sb-auth-session → getCurrentAuthUser)
   useEffect(() => {
     let cancelled = false;
 
     const loadInitialData = async () => {
-      // 세션 복원 (24시간 유효) - sessionStorage (브라우저 닫으면 자동 로그아웃)
-      // 세션에 username + role + passwordHash 저장 (관리자 사용자 관리 API 호출 시 필요)
       try {
-        // 과거 localStorage에 자동로그인되던 세션 흔적 제거 (보안)
-        try { localStorage.removeItem(AUTH_STORAGE_KEY); } catch (e2) {}
-        const raw = sessionStorage.getItem(AUTH_STORAGE_KEY);
-        if (raw) {
-          const session = JSON.parse(raw);
-          if (session && session.expiresAt && Date.now() < session.expiresAt && session.username && session.role) {
-            if (!cancelled) {
-              setCurrentUser({
-                username: session.username,
-                role: session.role,
-                name: session.name || session.username,
-                passwordHash: session.passwordHash || '',
-              });
-            }
-          } else {
-            sessionStorage.removeItem(AUTH_STORAGE_KEY);
+        const authUser = await getCurrentAuthUser();
+        if (authUser?.id && !cancelled) {
+          const isAdmin = await checkIsAdmin();
+          if (!cancelled) {
+            setCurrentUser({
+              id: authUser.id,
+              email: authUser.email,
+              role: isAdmin ? 'admin' : 'teacher',
+              name: authUser.user_metadata?.display_name || authUser.email?.split('@')[0] || authUser.email,
+            });
           }
         }
       } catch (e) {
         devWarn('세션 복원 실패:', e);
       }
-
       if (!cancelled) setAuthChecked(true);
     };
 
@@ -2509,29 +2658,13 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // 사용자 DB는 더 이상 클라이언트에 저장 안 함 (Edge Function이 Supabase aac_users 테이블 관리)
-  // UserManagement 컴포넌트가 자체적으로 list API 호출해서 표시
-
   const handleLogin = (user) => {
+    // Auth 세션은 signInWithPassword에서 이미 sessionStorage에 저장됨.
+    // 여기선 앱 상태(currentUser)만 세팅.
     setCurrentUser(user);
-    const expiresAt = Date.now() + SESSION_HOURS * 60 * 60 * 1000;
-    // 세션은 sessionStorage에 저장 (브라우저/탭 닫으면 자동 로그아웃 → 공용기기 안전)
-    // sessionStorage가 차단되면 그냥 메모리에만 유지 (탭 닫으면 다시 로그인)
-    try {
-      sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
-        username: user.username,
-        role: user.role,
-        name: user.name || user.username,
-        passwordHash: user.passwordHash || '', // 관리자 사용자 관리 API 호출용
-        expiresAt,
-      }));
-    } catch (e) {
-      devWarn('세션 저장 실패 (sessionStorage 차단):', e);
-    }
   };
 
   const handleLogout = () => {
-    // 확인 창 없이 바로 로그아웃 (잘못 눌러도 다시 로그인하면 됨)
     // 로그아웃 전: 현재 작업 중인 카드를 마지막으로 저장 (디바운싱 우회)
     if (currentUser && cards.length > 0 && draftKey) {
       try {
@@ -2539,14 +2672,10 @@ export default function App() {
         localStorage.setItem(draftKey, JSON.stringify(draft));
       } catch {}
     }
-    // 그 다음 화면에서 카드 비우기 (다른 사용자가 보면 안 되니까)
     setCards([]);
     setCurrentUser(null);
     setShowUserManagement(false);
-    try {
-      sessionStorage.removeItem(AUTH_STORAGE_KEY);
-      localStorage.removeItem(AUTH_STORAGE_KEY);
-    } catch {}
+    signOutAuth(); // Auth 세션 정리 (sb-auth-session 제거 + 서버 logout)
   };
 
   // ───── 기존 AAC maker 상태 ─────
@@ -2624,33 +2753,25 @@ export default function App() {
         devWarn('히스토리 인덱스 불러오기 실패:', e);
       }
       try {
-        // 카테고리도 Supabase 공유 (aac_app_settings 테이블)
-        const r = await callAuthFn({
-          action: 'getAppSetting',
-          username: currentUser.username,
-          password_hash: currentUser.passwordHash,
-          key: CATEGORIES_KEY,
-        });
-        if (!cancelled && r.ok && Array.isArray(r.value)) setCategories(r.value);
+        // 카테고리: 본인 aac_data 에 저장 (RLS로 본인 것만)
+        const row = await dataGet(CATEGORIES_KEY);
+        if (!cancelled && row?.value) {
+          const parsed = JSON.parse(row.value);
+          if (Array.isArray(parsed)) setCategories(parsed);
+        }
       } catch {}
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
 
-  // 카테고리 변경 시 Edge Function으로 저장 (모든 사용자 공유)
+  // 카테고리 변경 시 본인 aac_data 에 저장
   const categoriesSaveTimerRef = useRef(null);
   useEffect(() => {
     if (!authChecked || !currentUser) return;
     if (categoriesSaveTimerRef.current) clearTimeout(categoriesSaveTimerRef.current);
     categoriesSaveTimerRef.current = setTimeout(() => {
-      callAuthFn({
-        action: 'saveAppSetting',
-        username: currentUser.username,
-        password_hash: currentUser.passwordHash,
-        key: CATEGORIES_KEY,
-        value: categories,
-      }).catch(e => devWarn('카테고리 저장 실패:', e));
+      dataSet(CATEGORIES_KEY, JSON.stringify(categories)).catch(e => devWarn('카테고리 저장 실패:', e));
     }, 800);
     return () => {
       if (categoriesSaveTimerRef.current) clearTimeout(categoriesSaveTimerRef.current);
@@ -2664,7 +2785,7 @@ export default function App() {
 
   // ───── 작업 중 카드 자동 저장 (drafts) ─────
   // 사용자별로 localStorage에만 저장 (브라우저별 분리, 새로고침 시 복구)
-  const draftKey = currentUser ? `${DRAFT_KEY_PREFIX}${currentUser.username}` : null;
+  const draftKey = currentUser ? `${DRAFT_KEY_PREFIX}${currentUser.email}` : null;
 
   // 로그인 후 한 번: 작업 중이던 카드 복구
   useEffect(() => {
@@ -2687,7 +2808,7 @@ export default function App() {
       devWarn('초안 복구 실패:', e);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.username, authChecked]); // 로그인 변경 시에만
+  }, [currentUser?.email, authChecked]); // 로그인 변경 시에만
 
   // 작업 중인 카드 자동 저장 - 디바운싱으로 부담 최소화
   // 주의: 카드 0장이어도 자동으로 draft를 지우진 않음 (로그아웃 시 race 방지)
@@ -2708,7 +2829,7 @@ export default function App() {
       } catch (e) {
         // 1차 실패: 다른 사용자의 오래된 draft 정리 후 재시도
         devWarn('자동 저장 실패 - 다른 사용자 draft 정리 후 재시도:', e);
-        const cleaned = cleanupOldDrafts(currentUser.username);
+        const cleaned = cleanupOldDrafts(currentUser.email);
         try {
           localStorage.setItem(draftKey, json);
           if (cleaned > 0) {
@@ -2791,7 +2912,7 @@ export default function App() {
     let cancelled = false;
     let timerId = null;
     try {
-      const key = `aac_tutorial_seen_${currentUser.username}`;
+      const key = `aac_tutorial_seen_${currentUser.email}`;
       const seen = localStorage.getItem(key);
       if (!seen) {
         timerId = setTimeout(() => {
@@ -2804,13 +2925,13 @@ export default function App() {
       if (timerId) clearTimeout(timerId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.username]); // username만 의존 - 객체 참조 변경 무시
+  }, [currentUser?.email]); // username만 의존 - 객체 참조 변경 무시
 
   const closeTutorial = () => {
     setShowTutorial(false);
     if (currentUser) {
       try {
-        localStorage.setItem(`aac_tutorial_seen_${currentUser.username}`, '1');
+        localStorage.setItem(`aac_tutorial_seen_${currentUser.email}`, '1');
       } catch {}
     }
   };
@@ -3072,7 +3193,7 @@ export default function App() {
   const isAdmin = currentUser?.role === 'admin';
   const visibleHistory = isAdmin
     ? history
-    : history.filter(h => h.ownerUsername === currentUser?.username);
+    : history.filter(h => h.ownerUsername === currentUser?.email);
 
   // ───── 인쇄 히스토리 관리 ─────
 
@@ -3169,12 +3290,12 @@ export default function App() {
       labelPos,
       fontId,
       labelSize,
-      ownerUsername: currentUser?.username || 'unknown',
+      ownerUsername: currentUser?.email || 'unknown',
       ownerName: currentUser?.name || '알 수 없음',
     };
 
     // 본인 묶음 중 중복 검사 - 본문 비교 필요하므로 본인 묶음만 본문 로드
-    const myStubs = history.filter(h => h.ownerUsername === currentUser?.username);
+    const myStubs = history.filter(h => h.ownerUsername === currentUser?.email);
     let duplicateId = null;
     for (const stub of myStubs) {
       // 인덱스 카드 수와 다르면 본문 로드 안 해도 됨
@@ -3222,7 +3343,7 @@ export default function App() {
     const target = history.find(h => h.id === id);
     if (!target) return;
     // 권한 체크: 관리자는 모두 삭제 가능, 선생님은 자기 것만
-    if (currentUser?.role !== 'admin' && target.ownerUsername !== currentUser?.username) {
+    if (currentUser?.role !== 'admin' && target.ownerUsername !== currentUser?.email) {
       safeAlert('다른 선생님의 묶음은 삭제할 수 없습니다.');
       return;
     }
@@ -3240,7 +3361,7 @@ export default function App() {
   const renameHistory = async (id, currentName) => {
     const target = history.find(h => h.id === id);
     if (!target) return;
-    if (currentUser?.role !== 'admin' && target.ownerUsername !== currentUser?.username) {
+    if (currentUser?.role !== 'admin' && target.ownerUsername !== currentUser?.email) {
       safeAlert('다른 선생님의 묶음은 이름을 바꿀 수 없습니다.');
       return;
     }
@@ -3301,7 +3422,7 @@ export default function App() {
     // 권한 필터링: 관리자는 전체, 선생님은 자기 것만
     const myHistory = currentUser?.role === 'admin'
       ? history
-      : history.filter(h => h.ownerUsername === currentUser?.username);
+      : history.filter(h => h.ownerUsername === currentUser?.email);
     if (myHistory.length === 0) {
       safeAlert('내보낼 묶음이 없습니다.');
       return;
@@ -3357,7 +3478,7 @@ export default function App() {
       let skippedCount = 0;
 
       // 본인 묶음 본문을 미리 로드해서 중복 검사
-      const myStubs = history.filter(h => h.ownerUsername === currentUser?.username);
+      const myStubs = history.filter(h => h.ownerUsername === currentUser?.email);
 
       for (const b of data.bundles) {
         if (!Array.isArray(b.cards) || b.cards.length === 0) continue;
@@ -3393,7 +3514,7 @@ export default function App() {
           labelPos: b.labelPos || 'bottom',
           fontId: b.fontId || 'round',
           labelSize: b.labelSize || 14,
-          ownerUsername: currentUser?.username || 'unknown',
+          ownerUsername: currentUser?.email || 'unknown',
           ownerName: currentUser?.name || '알 수 없음',
         };
         await addHistoryItem(snapshot, currentUser);
@@ -3574,7 +3695,7 @@ export default function App() {
       {showBundleLoader && (() => {
         const visibleHistory = currentUser?.role === 'admin'
           ? history
-          : history.filter(h => h.ownerUsername === currentUser?.username);
+          : history.filter(h => h.ownerUsername === currentUser?.email);
         const filtered = historySearch.trim()
           ? visibleHistory.filter(h =>
               h.name.toLowerCase().includes(historySearch.toLowerCase()) ||
@@ -3675,8 +3796,8 @@ export default function App() {
                         });
                         // 본인 묶음을 맨 위로, 나머지는 이름순
                         const sortedOwners = Object.keys(groups).sort((a, b) => {
-                          if (a === currentUser?.username) return -1;
-                          if (b === currentUser?.username) return 1;
+                          if (a === currentUser?.email) return -1;
+                          if (b === currentUser?.email) return 1;
                           return groups[a].name.localeCompare(groups[b].name);
                         });
                         return (
@@ -3684,7 +3805,7 @@ export default function App() {
                             {sortedOwners.map(owner => {
                               const group = groups[owner];
                               const isOpen = expandedOwners[owner] !== false; // 기본 펼침
-                              const isMine = owner === currentUser?.username;
+                              const isMine = owner === currentUser?.email;
                               return (
                                 <div key={owner} className="bg-stone-50 border border-stone-200 rounded-lg overflow-hidden">
                                   {/* 폴더 헤더 */}
@@ -3945,9 +4066,9 @@ export default function App() {
             >
               <FolderOpen className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">묶음 불러오기</span>
-              {history.filter(h => currentUser?.role === 'admin' || h.ownerUsername === currentUser?.username).length > 0 && (
+              {history.filter(h => currentUser?.role === 'admin' || h.ownerUsername === currentUser?.email).length > 0 && (
                 <span className="absolute -top-1 -right-1 text-[9px] font-bold text-white bg-amber-500 rounded-full min-w-[16px] h-[16px] px-1 flex items-center justify-center tabular-nums">
-                  {history.filter(h => currentUser?.role === 'admin' || h.ownerUsername === currentUser?.username).length}
+                  {history.filter(h => currentUser?.role === 'admin' || h.ownerUsername === currentUser?.email).length}
                 </span>
               )}
             </button>
@@ -3976,13 +4097,13 @@ export default function App() {
                   <Shield className="w-3.5 h-3.5 text-amber-700" />
                 ) : (
                   <span className="text-[10px] font-bold text-stone-600">
-                    {(currentUser.name || currentUser.username || '?').charAt(0)}
+                    {(currentUser.name || currentUser.email || '?').charAt(0)}
                   </span>
                 )}
               </div>
               {/* 사용자 이름 - 넓은 화면에서만 표시, 좁으면 자동 숨김 */}
               <div className="hidden md:block leading-tight pr-1 max-w-[80px] overflow-hidden">
-                <p className="text-[11px] font-bold text-stone-900 truncate whitespace-nowrap">{currentUser.name || currentUser.username}</p>
+                <p className="text-[11px] font-bold text-stone-900 truncate whitespace-nowrap">{currentUser.name || currentUser.email}</p>
                 <p className="text-[9px] text-stone-500 whitespace-nowrap">
                   {currentUser.role === 'admin' ? '관리자' : '선생님'}
                 </p>
@@ -4588,7 +4709,7 @@ export default function App() {
                 <div className="py-10 px-4 text-center">
                   <div className="text-5xl mb-3">👋</div>
                   <h2 className="text-lg sm:text-xl font-bold text-stone-800 mb-1">
-                    안녕하세요{currentUser ? `, ${currentUser.username}` : ''} 선생님!
+                    안녕하세요{currentUser ? `, ${currentUser.name || currentUser.email}` : ''} 선생님!
                   </h2>
                   <p className="text-sm text-stone-500 mb-5">첫 카드를 만들어볼까요?</p>
 
