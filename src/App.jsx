@@ -311,6 +311,12 @@ async function dataList(prefix, userIdOverride) {
 const HISTORY_INDEX_KEY = 'aac_history_index';
 const HISTORY_ITEM_PREFIX = 'aac_history_item:';
 const CATEGORIES_KEY = 'aac_categories';
+// ───── 라이브러리(영구 보관) 저장 키 ─────
+// 카테고리별로 분리 저장: aac_library:{categoryId}  (카테고리 없음 = __none__)
+// 각 값 = JSON 배열 [{ id, image, originalImage, label, categoryId }]
+const LIBRARY_PREFIX = 'aac_library:';
+const LIBRARY_NONE = '__none__';
+const LIBRARY_KEY = (categoryId) => `${LIBRARY_PREFIX}${categoryId || LIBRARY_NONE}`;
 const DRAFT_KEY_PREFIX = 'aac_draft:'; // 작업 중 카드 자동 저장 (사용자별, localStorage만)
 const SESSION_HOURS = 24; // 로그인 유효 시간
 
@@ -617,6 +623,52 @@ const clearHistory = async (ownerFilter, auth) => {
   const keys = [...(idxRes.rows || []), ...(itemRes.rows || [])].map(r => r.key);
   await Promise.all(keys.map(k => dataDelete(k).catch(() => {})));
 };
+
+// ───── 라이브러리(영구 보관) 저장소 ─────
+// 카테고리별로 카드 배열을 저장/로드. 인쇄판(cards)과 완전히 분리된 별도 저장.
+
+// 특정 카테고리의 라이브러리 카드 로드
+const loadLibraryCategory = async (categoryId) => {
+  try {
+    const row = await dataGet(LIBRARY_KEY(categoryId));
+    if (!row?.value) return [];
+    const arr = JSON.parse(row.value);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { devWarn('라이브러리 로드 실패:', categoryId, e); return []; }
+};
+
+// 특정 카테고리의 라이브러리 카드 저장 (해당 카테고리 통째로 덮어쓰기)
+const saveLibraryCategory = async (categoryId, cards) => {
+  const clean = (cards || []).map(c => ({
+    id: c.id, image: c.image, originalImage: c.originalImage || null,
+    label: c.label || '', categoryId: categoryId || null,
+  }));
+  const r = await dataSet(LIBRARY_KEY(categoryId), JSON.stringify(clean));
+  if (!r) devWarn('라이브러리 저장 실패:', categoryId);
+  return r;
+};
+
+// 전체 라이브러리 로드 (모든 카테고리 + 카테고리 없음) → categoryId 별 맵으로 반환
+const loadLibraryAll = async () => {
+  try {
+    const res = await dataList(LIBRARY_PREFIX);
+    const map = {}; // { [categoryId or LIBRARY_NONE]: cards[] }
+    for (const r of (res.rows || [])) {
+      const catKey = r.key.slice(LIBRARY_PREFIX.length); // categoryId 또는 __none__
+      try {
+        const arr = JSON.parse(r.value);
+        if (Array.isArray(arr)) map[catKey] = arr;
+      } catch {}
+    }
+    return map;
+  } catch (e) { devWarn('라이브러리 전체 로드 실패:', e); return {}; }
+};
+
+// 라이브러리에서 카테고리 하나 통째로 삭제 (카테고리 자체를 지울 때)
+const deleteLibraryCategory = async (categoryId) => {
+  return dataDelete(LIBRARY_KEY(categoryId)).catch(() => null);
+};
+
 
 // 미리보기/iframe 환경에서 confirm/alert이 차단되는 경우 대비 안전 래퍼
 // sandbox iframe에서는 confirm()이 에러도 안 내고 undefined를 반환하며 무시됨
@@ -1889,6 +1941,180 @@ const CategoryManager = ({ categories, onUpdate, onClose }) => {
 };
 
 // ─────────────────────────────────────────────────────────────
+// 라이브러리 화면 (영구 보관 카드를 카테고리별로 보고 골라 담기)
+// ─────────────────────────────────────────────────────────────
+const LibraryView = ({
+  library, categories, libraryCatId, setLibraryCatId,
+  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, cardSearch, setCardSearch,
+}) => {
+  // 탭 목록: 카테고리들 + 미분류
+  const NONE = '__none__';
+  const currentKey = libraryCatId || NONE;
+  const cardsInCat = library[currentKey] || [];
+  const q = (cardSearch || '').trim().toLowerCase();
+  const visible = q
+    ? cardsInCat.filter(c => (c.label || '').toLowerCase().includes(q))
+    : cardsInCat;
+
+  const countOf = (key) => (library[key] || []).length;
+  const toggle = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const selectedCount = selected.size;
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* 카테고리 탭 (가로 스크롤) */}
+      <div className="flex gap-1.5 overflow-x-auto pb-2 mb-3 -mx-1 px-1">
+        {categories.map((cat) => (
+          <button
+            key={cat.id}
+            onClick={() => { setLibraryCatId(cat.id); }}
+            className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 ${
+              currentKey === cat.id
+                ? 'text-white shadow-sm'
+                : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+            }`}
+            style={currentKey === cat.id ? { backgroundColor: cat.color } : {}}
+          >
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: currentKey === cat.id ? 'rgba(255,255,255,0.7)' : cat.color }} />
+            {cat.name}
+            <span className="tabular-nums opacity-70">{countOf(cat.id)}</span>
+          </button>
+        ))}
+        <button
+          onClick={() => setLibraryCatId(null)}
+          className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 ${
+            currentKey === NONE ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+          }`}
+        >
+          미분류 <span className="tabular-nums opacity-70">{countOf(NONE)}</span>
+        </button>
+      </div>
+
+      {/* 액션 바: 이 카테고리에 카드 추가 / 묶음 불러오기 */}
+      <div className="flex items-center gap-2 mb-3">
+        <button
+          onClick={onAddImagesClick}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold rounded-lg transition"
+        >
+          <Plus className="w-3.5 h-3.5" /> 이미지 추가
+        </button>
+        <button
+          onClick={onImportClick}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-stone-200 hover:bg-stone-50 text-stone-700 text-xs font-bold rounded-lg transition"
+        >
+          <FolderOpen className="w-3.5 h-3.5" /> 묶음 불러오기
+        </button>
+        <span className="text-[11px] text-stone-400 ml-auto hidden sm:block">
+          여기서 추가하면 이 카테고리에 저장돼요
+        </span>
+      </div>
+
+      {/* 검색 */}
+      {cardsInCat.length >= 5 && (
+        <div className="mb-3 flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-2">
+          <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
+          <input
+            type="text"
+            value={cardSearch}
+            onChange={(e) => setCardSearch(e.target.value)}
+            placeholder="라벨로 검색..."
+            className="flex-1 bg-transparent text-sm outline-none text-stone-800"
+          />
+          {cardSearch && (
+            <button onClick={() => setCardSearch('')} className="p-1 hover:bg-stone-100 rounded transition flex-shrink-0">
+              <X className="w-3 h-3 text-stone-500" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 카드 격자 */}
+      <div className="flex-1 overflow-y-auto pb-24">
+        {visible.length === 0 ? (
+          <div className="text-center py-16 text-stone-400">
+            <Folder className="w-12 h-12 mx-auto mb-3 text-stone-200" strokeWidth={1.5} />
+            <p className="text-sm mb-1">
+              {q ? `"${cardSearch}"에 해당하는 카드가 없습니다` : '이 카테고리에 저장된 카드가 없습니다'}
+            </p>
+            {!q && (
+              <button
+                onClick={onAddImagesClick}
+                className="mt-3 inline-flex items-center gap-1.5 px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-lg transition"
+              >
+                <Plus className="w-3.5 h-3.5" /> 이 카테고리에 카드 추가
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-3">
+            {visible.map((card) => {
+              const isSel = selected.has(card.id);
+              return (
+                <button
+                  key={card.id}
+                  onClick={() => toggle(card.id)}
+                  className={`relative rounded-xl overflow-hidden border-2 transition text-left ${
+                    isSel ? 'border-amber-500 ring-2 ring-amber-200' : 'border-stone-200 hover:border-stone-300'
+                  }`}
+                >
+                  <div className="aspect-square bg-white">
+                    {card.image ? (
+                      <img src={card.image} alt={card.label || ''} className="w-full h-full object-contain" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-stone-300">
+                        <ImageIcon className="w-8 h-8" />
+                      </div>
+                    )}
+                  </div>
+                  {card.label && (
+                    <div className="px-1.5 py-1 text-center text-xs font-semibold text-stone-700 truncate bg-stone-50">
+                      {card.label}
+                    </div>
+                  )}
+                  {/* 체크 표시 */}
+                  <div className={`absolute top-1.5 right-1.5 w-6 h-6 rounded-full flex items-center justify-center transition ${
+                    isSel ? 'bg-amber-500 text-white' : 'bg-white/80 text-stone-300 border border-stone-200'
+                  }`}>
+                    <Check className="w-4 h-4" strokeWidth={3} />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 하단 담기 바 (선택된 게 있을 때만) */}
+      {selectedCount > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-stone-200 shadow-lg px-4 py-3 flex items-center gap-3">
+          <button
+            onClick={() => setSelected(new Set())}
+            className="text-xs text-stone-500 hover:text-stone-700 font-medium"
+          >
+            선택 해제
+          </button>
+          <div className="flex-1 text-sm font-bold text-stone-800 text-center tabular-nums">
+            {selectedCount}장 선택됨
+          </div>
+          <button
+            onClick={onAddToPrint}
+            className="px-5 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-bold rounded-lg transition flex items-center gap-2"
+          >
+            <ArrowRight className="w-4 h-4" /> 인쇄판에 담기
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
 // 일괄 라벨 편집 모달
 // ─────────────────────────────────────────────────────────────
 const BulkLabelEditor = ({ cards, categories, onUpdate, onClose }) => {
@@ -2766,6 +2992,13 @@ export default function App() {
   // 일괄 라벨 편집 모달
   const [showBulkEditor, setShowBulkEditor] = useState(false);
 
+  // ───── 라이브러리(영구 보관) 상태 ─────
+  const [viewMode, setViewMode] = useState('print'); // 'print'(인쇄판) | 'library'(라이브러리)
+  const [library, setLibrary] = useState({}); // { [categoryId or '__none__']: cards[] }
+  const libraryLoadedRef = useRef(false); // 로드 완료 전 저장 금지 (덮어쓰기 방지)
+  const [libraryCatId, setLibraryCatId] = useState(null); // 라이브러리에서 보고 있는 카테고리 (null=미분류)
+  const [librarySelected, setLibrarySelected] = useState(() => new Set()); // 체크된 카드 id
+
   // 튜토리얼
   const [showTutorial, setShowTutorial] = useState(false);
 
@@ -2821,7 +3054,23 @@ export default function App() {
     };
   }, [categories, authChecked, currentUser]);
 
-  // 필터링 켜질 때 카테고리 박스 자동 펼치기
+  // ───── 라이브러리 로드 (로그인 후 1회) ─────
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    libraryLoadedRef.current = false;
+    (async () => {
+      try {
+        const map = await loadLibraryAll();
+        if (!cancelled) setLibrary(map || {});
+      } catch (e) {
+        devWarn('라이브러리 로드 실패:', e);
+      }
+      if (!cancelled) libraryLoadedRef.current = true;
+    })();
+    return () => { cancelled = true; libraryLoadedRef.current = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
   useEffect(() => {
     if (filterCategoryId) setCategoryOpen(true);
   }, [filterCategoryId]);
@@ -3067,6 +3316,7 @@ export default function App() {
             image: cropped,
             originalImage: compressedOriginal, // 압축된 원본 (편집용)
             label: autoLabel,
+            categoryId: filterCategoryId || null, // 특정 카테고리 보고 있을 때 추가하면 그 카테고리로
           });
         } catch (err) {
           failed.push({ name: file.name, reason: err?.message || '알 수 없는 오류' });
@@ -3079,7 +3329,20 @@ export default function App() {
       setImageProcessing(null);
     }
     if (newCards.length > 0) {
-      setCards(prev => [...prev, ...newCards]);
+      if (viewMode === 'library') {
+        // 라이브러리 모드: 지금 보고 있는 카테고리의 라이브러리에 저장
+        const NONE = '__none__';
+        const key = libraryCatId || NONE;
+        const tagged = newCards.map(c => ({ ...c, categoryId: libraryCatId || null }));
+        let toSave = null;
+        setLibrary(prev => {
+          toSave = [...(prev[key] || []), ...tagged];
+          return { ...prev, [key]: toSave };
+        });
+        saveLibraryCategory(libraryCatId, toSave || tagged).catch(e => devWarn('라이브러리 저장 실패:', e));
+      } else {
+        setCards(prev => [...prev, ...newCards]);
+      }
     }
     // 결과 피드백: 사전검증 실패 + 처리 중 실패를 사유별로 그룹화
     const allFailed = [...preFiltered, ...failed];
@@ -3096,7 +3359,7 @@ export default function App() {
         safeAlert(`이미지를 추가할 수 없습니다.\n${lines.join('\n')}`);
       }
     }
-  }, []);
+  }, [filterCategoryId, viewMode, libraryCatId]);
 
   const onFileChange = (e) => {
     if (e.target.files) handleFiles(e.target.files);
@@ -3108,6 +3371,52 @@ export default function App() {
     setIsDragging(false);
     if (e.dataTransfer.files) handleFiles(e.dataTransfer.files);
   };
+
+  // 라이브러리에서 선택한 카드들을 인쇄판(cards)에 복사해 담기 (원본은 보존)
+  // 라이브러리에 카드 추가 (특정 카테고리로) + Supabase 저장
+  // newCards: [{ image, originalImage?, label? }]  categoryId: null이면 미분류
+  const addCardsToLibrary = useCallback(async (newCards, categoryId) => {
+    const NONE = '__none__';
+    const key = categoryId || NONE;
+    const prepared = (newCards || []).map(c => ({
+      id: c.id || newId(),
+      image: c.image,
+      originalImage: c.originalImage || null,
+      label: c.label || '',
+      categoryId: categoryId || null,
+    }));
+    if (prepared.length === 0) return;
+    let toSave = null;
+    setLibrary(prev => {
+      toSave = [...(prev[key] || []), ...prepared];
+      return { ...prev, [key]: toSave };
+    });
+    if (toSave) await saveLibraryCategory(categoryId, toSave);
+  }, []);
+
+  const addSelectedToPrint = useCallback(() => {
+    const NONE = '__none__';
+    // library 전체를 훑어 선택된 id의 카드를 찾아 복사 (새 id 부여 → 인쇄판에서 편집해도 원본 무관)
+    const picked = [];
+    Object.values(library).forEach(arr => {
+      (arr || []).forEach(c => {
+        if (librarySelected.has(c.id)) {
+          picked.push({
+            id: newId(),
+            image: c.image,
+            originalImage: c.originalImage || null,
+            label: c.label || '',
+            categoryId: c.categoryId || null,
+          });
+        }
+      });
+    });
+    if (picked.length === 0) return;
+    setCards(prev => [...prev, ...picked]);
+    setLibrarySelected(new Set());
+    setViewMode('print');
+    safeAlert(`${picked.length}장을 인쇄판에 담았습니다.`);
+  }, [library, librarySelected]);
 
   // useCallback으로 감싸서 함수 참조 안정화 (React.memo의 CardEditor가 불필요하게 리렌더링되는 것 방지)
   const updateCard = useCallback((id, updated) => {
@@ -3581,6 +3890,43 @@ export default function App() {
   const handleImportChange = (e) => {
     const file = e.target.files?.[0];
     if (file) importBundles(file);
+    e.target.value = '';
+  };
+
+  // ───── 라이브러리로 묶음(.json) 불러오기 ─────
+  // 파일 안 모든 묶음의 카드를 "지금 보고 있는 라이브러리 카테고리"에 넣음
+  const importToLibrary = async (file) => {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data || !Array.isArray(data.bundles)) {
+        safeAlert('이 파일은 검단ABA AAC maker 파일이 아닙니다.');
+        return;
+      }
+      const incoming = [];
+      for (const b of data.bundles) {
+        if (!Array.isArray(b.cards)) continue;
+        for (const c of b.cards) {
+          if (!c.image) continue;
+          incoming.push({ id: newId(), image: c.image, originalImage: c.originalImage || null, label: c.label || '' });
+        }
+      }
+      if (incoming.length === 0) { safeAlert('불러올 카드가 없습니다.'); return; }
+      await addCardsToLibrary(incoming, libraryCatId);
+      const catName = libraryCatId
+        ? (categories.find(c => c.id === libraryCatId)?.name || '카테고리')
+        : '미분류';
+      safeAlert(`"${catName}"에 ${incoming.length}장을 추가했습니다.`);
+    } catch (e) {
+      devError('라이브러리 불러오기 실패:', e);
+      safeAlert('파일을 읽을 수 없습니다. 올바른 .json 파일인지 확인해주세요.');
+    }
+  };
+  const libraryImportFileRef = useRef(null);
+  const handleLibraryImportClick = () => libraryImportFileRef.current?.click();
+  const handleLibraryImportChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) importToLibrary(file);
     e.target.value = '';
   };
 
@@ -4699,7 +5045,51 @@ export default function App() {
 
         {/* 메인 영역 */}
         <main className="col-span-12 md:col-span-9">
-          {view === 'edit' ? (
+          {/* 인쇄판 ⇄ 라이브러리 전환 토글 */}
+          <div className="no-print flex items-center gap-1 bg-stone-100 rounded-xl p-1 mb-4">
+            <button
+              onClick={() => setViewMode('print')}
+              className={`flex-1 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 ${
+                viewMode === 'print' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-700'
+              }`}
+            >
+              <FileDown className="w-4 h-4" /> 인쇄판
+              {cards.length > 0 && <span className="tabular-nums opacity-70">{cards.length}</span>}
+            </button>
+            <button
+              onClick={() => setViewMode('library')}
+              className={`flex-1 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 ${
+                viewMode === 'library' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-700'
+              }`}
+            >
+              <Folder className="w-4 h-4" /> 라이브러리
+            </button>
+          </div>
+
+          {viewMode === 'library' ? (
+            <>
+            <input
+              ref={libraryImportFileRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={handleLibraryImportChange}
+              className="hidden"
+            />
+            <LibraryView
+              library={library}
+              categories={categories}
+              libraryCatId={libraryCatId}
+              setLibraryCatId={setLibraryCatId}
+              selected={librarySelected}
+              setSelected={setLibrarySelected}
+              onAddToPrint={addSelectedToPrint}
+              onAddImagesClick={() => fileInputRef.current?.click()}
+              onImportClick={handleLibraryImportClick}
+              cardSearch={cardSearch}
+              setCardSearch={setCardSearch}
+            />
+            </>
+          ) : view === 'edit' ? (
             <>
               {/* 업로드 영역 - 카드 있으면 작게, 없으면 크게 */}
               <div
