@@ -2799,15 +2799,19 @@ export default function App() {
           if (Array.isArray(parsed)) setCategories(parsed);
         }
       } catch {}
+      // 로드가 끝난 뒤에만 저장을 허용 (로드 전 빈 배열이 저장돼 덮어쓰는 문제 방지)
+      if (!cancelled) categoriesLoadedRef.current = true;
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; categoriesLoadedRef.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
 
   // 카테고리 변경 시 본인 aac_data 에 저장
   const categoriesSaveTimerRef = useRef(null);
+  const categoriesLoadedRef = useRef(false); // 로드 완료 전에는 저장 금지 (빈 배열 덮어쓰기 방지)
   useEffect(() => {
     if (!authChecked || !currentUser) return;
+    if (!categoriesLoadedRef.current) return; // 아직 로드 안 끝났으면 저장 스킵
     if (categoriesSaveTimerRef.current) clearTimeout(categoriesSaveTimerRef.current);
     categoriesSaveTimerRef.current = setTimeout(() => {
       dataSet(CATEGORIES_KEY, JSON.stringify(categories)).catch(e => devWarn('카테고리 저장 실패:', e));
