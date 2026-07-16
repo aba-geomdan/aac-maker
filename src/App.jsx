@@ -2899,7 +2899,7 @@ const TutorialOverlay = ({ onClose }) => {
     {
       icon: FileDown,
       title: '6. PDF로 출력',
-      desc: '우측 상단 "PDF로 저장" 버튼을 누르면 인쇄 미리보기 화면으로 이동합니다. 거기서 "지금 인쇄하기" → 인쇄 대상 "PDF로 저장" 선택하면 끝!',
+      desc: '인쇄판에서 "인쇄 / PDF 저장" 버튼을 누르면 인쇄 대화상자가 열립니다. 인쇄 대상에서 "PDF로 저장"을 선택하면 끝! (미리 확인하려면 상단 "인쇄 미리보기" 탭)',
     },
     {
       icon: History,
@@ -5303,6 +5303,38 @@ export default function App() {
                   </>
                 )}
               </div>
+
+              {/* 저장 / 인쇄 버튼 (카드 있을 때만) - 편집창에서 바로 저장·인쇄 */}
+              {cards.length > 0 && (
+                <div className="no-print flex items-center justify-center gap-2 mb-4 flex-wrap">
+                  <button
+                    onClick={async () => {
+                      if (visibleCards.length === 0) { safeAlert('저장할 카드가 없습니다.'); return; }
+                      const name = safePrompt('아이 이름(또는 세트 이름)을 적어주세요:', '');
+                      if (name === null) return;
+                      if (!name.trim()) { safeAlert('이름을 입력해주세요.'); return; }
+                      try {
+                        await saveCurrentToHistory(name.trim());
+                        safeAlert(`"${name.trim()}"(으)로 저장했습니다.\n사이드바 "이전 인쇄 묶음"에서 불러올 수 있어요.`);
+                      } catch (err) {
+                        devWarn('저장 실패:', err);
+                        safeAlert('저장에 실패했습니다. 다시 시도해주세요.');
+                      }
+                    }}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-stone-300 hover:bg-stone-50 text-stone-800 text-sm font-semibold rounded-lg shadow-sm transition"
+                  >
+                    <FolderPlus className="w-4 h-4" />
+                    아이 이름으로 저장
+                  </button>
+                  <button
+                    onClick={handlePrint}
+                    className="flex items-center justify-center gap-2 px-5 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
+                  >
+                    <FileDown className="w-4 h-4" />
+                    인쇄 / PDF 저장
+                  </button>
+                </div>
+              )}
 
               {/* 카드 그리드 */}
               {cards.length === 0 ? (
