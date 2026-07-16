@@ -2013,8 +2013,13 @@ const LibraryView = ({
   const currentKey = libraryCatId || NONE;
   const cardsInCat = library[currentKey] || [];
   const q = (cardSearch || '').trim().toLowerCase();
+  // 검색어가 있으면 "모든 카테고리"에서 찾고, 없으면 현재 카테고리만 보여줌
+  const allCards = q
+    ? Object.entries(library).flatMap(([catKey, arr]) =>
+        (arr || []).map(c => ({ ...c, _catKey: catKey })))
+    : [];
   const visible = q
-    ? cardsInCat.filter(c => (c.label || '').toLowerCase().includes(q))
+    ? allCards.filter(c => (c.label || '').toLowerCase().includes(q))
     : cardsInCat;
 
   const countOf = (key) => (library[key] || []).length;
@@ -2040,32 +2045,24 @@ const LibraryView = ({
         </button>
       </div>
 
-      {/* 카테고리 탭 (가로 스크롤) */}
-      <div className="flex gap-1.5 overflow-x-auto pb-2 mb-3 -mx-1 px-1">
-        {categories.map((cat) => (
-          <button
-            key={cat.id}
-            onClick={() => { setLibraryCatId(cat.id); setCardSearch(''); }}
-            className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 ${
-              currentKey === cat.id
-                ? 'text-white shadow-sm'
-                : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
-            }`}
-            style={currentKey === cat.id ? { backgroundColor: cat.color } : {}}
-          >
-            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: currentKey === cat.id ? 'rgba(255,255,255,0.7)' : cat.color }} />
-            {cat.name}
-            <span className="tabular-nums opacity-70">{countOf(cat.id)}</span>
-          </button>
-        ))}
-        <button
-          onClick={() => { setLibraryCatId(null); setCardSearch(''); }}
-          className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 ${
-            currentKey === NONE ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
-          }`}
+      {/* 카테고리 선택 (드롭다운) */}
+      <div className="mb-3">
+        <select
+          value={currentKey}
+          onChange={(e) => {
+            const v = e.target.value;
+            setLibraryCatId(v === NONE ? null : v);
+            setCardSearch('');
+          }}
+          className="w-full px-3 py-2.5 rounded-lg border border-stone-300 bg-white text-sm font-bold text-stone-800 outline-none focus:border-stone-500 transition cursor-pointer"
         >
-          미분류 <span className="tabular-nums opacity-70">{countOf(NONE)}</span>
-        </button>
+          {categories.map((cat) => (
+            <option key={cat.id} value={cat.id}>
+              {cat.name} ({countOf(cat.id)})
+            </option>
+          ))}
+          <option value={NONE}>미분류 ({countOf(NONE)})</option>
+        </select>
       </div>
 
       {/* 액션 바: 이 카테고리에 카드 추가 / 묶음 불러오기 */}
@@ -2087,23 +2084,26 @@ const LibraryView = ({
         </span>
       </div>
 
-      {/* 검색 */}
-      {cardsInCat.length >= 5 && (
-        <div className="mb-3 flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-2">
-          <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
-          <input
-            type="text"
-            value={cardSearch}
-            onChange={(e) => setCardSearch(e.target.value)}
-            placeholder="라벨로 검색..."
-            className="flex-1 bg-transparent text-sm outline-none text-stone-800"
-          />
-          {cardSearch && (
-            <button onClick={() => setCardSearch('')} className="p-1 hover:bg-stone-100 rounded transition flex-shrink-0">
-              <X className="w-3 h-3 text-stone-500" />
-            </button>
-          )}
-        </div>
+      {/* 검색 (전체 카테고리에서 찾음) */}
+      <div className="mb-3 flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-2">
+        <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
+        <input
+          type="text"
+          value={cardSearch}
+          onChange={(e) => setCardSearch(e.target.value)}
+          placeholder="전체 카테고리에서 검색..."
+          className="flex-1 bg-transparent text-sm outline-none text-stone-800"
+        />
+        {cardSearch && (
+          <button onClick={() => setCardSearch('')} className="p-1 hover:bg-stone-100 rounded transition flex-shrink-0">
+            <X className="w-3 h-3 text-stone-500" />
+          </button>
+        )}
+      </div>
+      {q && (
+        <p className="text-[11px] text-stone-500 mb-2 -mt-1">
+          전체 카테고리에서 "{cardSearch}" 검색 결과 {visible.length}개
+        </p>
       )}
 
       {/* 카드 격자 */}
