@@ -697,6 +697,38 @@ const deleteLibraryCategoryCards = async (cards) => {
   await Promise.all((cards || []).map(c => deleteLibraryCard(c.id)));
 };
 
+// 구버전(카테고리 통째 행)을 신규(카드 1장=1행)로 이전.
+// 구버전 행이 있으면: 각 카드를 신규 키로 저장 → 구버전 행 삭제. 이전한 게 있으면 true 반환.
+const migrateLegacyLibrary = async () => {
+  let migrated = false;
+  try {
+    const oldRes = await dataList(LIBRARY_PREFIX);
+    for (const r of (oldRes.rows || [])) {
+      const catKey = r.key.slice(LIBRARY_PREFIX.length); // categoryId 또는 __none__
+      let arr = [];
+      try { arr = JSON.parse(r.value); } catch { arr = []; }
+      if (!Array.isArray(arr)) arr = [];
+      const categoryId = (catKey === LIBRARY_NONE) ? null : catKey;
+      // 각 카드를 신규 카드 키로 저장
+      for (const c of arr) {
+        if (!c || !c.image) continue;
+        const card = {
+          id: c.id || `lib_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          image: c.image,
+          originalImage: c.originalImage || null,
+          label: c.label || '',
+          categoryId,
+        };
+        await saveLibraryCard(card).catch(() => {});
+      }
+      // 구버전 통째 행 삭제
+      await dataDelete(r.key).catch(() => {});
+      migrated = true;
+    }
+  } catch (e) { devWarn('라이브러리 이전 실패:', e); }
+  return migrated;
+};
+
 
 
 // 미리보기/iframe 환경에서 confirm/alert이 차단되는 경우 대비 안전 래퍼
@@ -3121,6 +3153,8 @@ export default function App() {
     libraryLoadedRef.current = false;
     (async () => {
       try {
+        // 구버전(카테고리 통째 저장) → 신규(카드 단위)로 자동 이전
+        await migrateLegacyLibrary();
         const map = await loadLibraryAll();
         if (!cancelled) setLibrary(map || {});
       } catch (e) {
