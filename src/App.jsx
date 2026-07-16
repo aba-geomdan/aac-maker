@@ -3194,27 +3194,38 @@ export default function App() {
     let cancelled = false;
     libraryLoadedRef.current = false;
     (async () => {
-      // 초기 로드 타이밍(토큰 준비 전) 문제 대비: 카드를 받을 때까지 몇 번 재시도
-      for (let attempt = 0; attempt < 6; attempt++) {
+      // 진단(수동)에서 잘 되는 방식 그대로: LIBCARD만 직접 조회해서 map 구성.
+      // 토큰 준비 전 첫 시도가 실패할 수 있으므로 카드를 받을 때까지 재시도.
+      for (let attempt = 0; attempt < 8; attempt++) {
         if (cancelled) return;
         try {
-          const { map, hadError } = await loadLibraryAll();
+          const res = await dataList(LIBCARD_PREFIX);
           if (cancelled) return;
-          const gotCount = Object.values(map || {}).reduce((s, a) => s + (a?.length || 0), 0);
-          if (gotCount > 0) {
+          const rows = res.rows || [];
+          if (rows.length > 0) {
+            const map = {};
+            for (const r of rows) {
+              try {
+                const c = JSON.parse(r.value);
+                if (c && c.image) {
+                  const k = c.categoryId || '__none__';
+                  if (!map[k]) map[k] = [];
+                  map[k].push(c);
+                }
+              } catch {}
+            }
             setLibrary(map);
-            break; // 성공 → 종료
+            break; // 성공
           }
-          // 0개인데 에러였으면 재시도, 진짜 0개(에러 아님)면 첫 시도 후 종료
-          if (!hadError && attempt >= 1) {
-            setLibrary(map || {});
+          // 0개 + 에러 아님 = 진짜 카드 없음 (몇 번 확인 후 종료)
+          if (!res._error && attempt >= 2) {
+            setLibrary({});
             break;
           }
         } catch (e) {
-          devWarn('라이브러리 로드 실패(재시도):', e);
+          devWarn('라이브러리 로드 재시도:', e);
         }
-        // 재시도 전 대기 (점점 길게: 0.5s, 1s, 1.5s...)
-        await new Promise(res => setTimeout(res, 500 * (attempt + 1)));
+        await new Promise(res => setTimeout(res, 600 * (attempt + 1)));
       }
       if (!cancelled) libraryLoadedRef.current = true;
     })();
