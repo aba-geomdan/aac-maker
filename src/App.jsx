@@ -2062,6 +2062,14 @@ const LibraryView = ({
             </option>
           ))}
           <option value={NONE}>미분류 ({countOf(NONE)})</option>
+          {/* categories에 없는데 카드가 저장된 키(떠도는 카드) - 안전하게 표시 */}
+          {Object.keys(library)
+            .filter(k => k !== NONE && !categories.some(c => c.id === k) && (library[k] || []).length > 0)
+            .map(k => (
+              <option key={k} value={k}>
+                (미연결) {(library[k] || []).length}개
+              </option>
+            ))}
         </select>
       </div>
 
@@ -3489,13 +3497,21 @@ export default function App() {
     return { okCount, failCount };
   }, []);
 
-  // 카테고리 탭 진입 시(또는 카테고리 로드 후), 아무것도 안 골랐으면 첫 카테고리 자동 선택
+  // 카테고리 탭 진입 시: 카드가 들어있는 첫 카테고리를 우선 선택 (없으면 첫 카테고리)
   useEffect(() => {
-    if (viewMode === 'library' && libraryCatId === null && categories.length > 0) {
+    if (viewMode !== 'library' || libraryCatId !== null) return;
+    if (categories.length === 0) return;
+    // 카드가 실제로 있는 카테고리를 먼저 찾음
+    const withCards = categories.find(c => (library[c.id] || []).length > 0);
+    if (withCards) {
+      setLibraryCatId(withCards.id);
+    } else if ((library['__none__'] || []).length > 0) {
+      setLibraryCatId(null); // 미분류에 카드가 있으면 미분류로
+    } else {
       setLibraryCatId(categories[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, categories]);
+  }, [viewMode, categories, library]);
   const handleCategoriesUpdate = useCallback((nextCategories) => {
     const nextIds = new Set((nextCategories || []).map(c => c.id));
     const removedIds = categories.map(c => c.id).filter(id => !nextIds.has(id));
