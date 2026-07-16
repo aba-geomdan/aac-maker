@@ -3195,14 +3195,14 @@ export default function App() {
     libraryLoadedRef.current = false;
     (async () => {
       try {
-        // 구버전(카테고리 통째 저장) → 신규(카드 단위)로 자동 이전
-        await migrateLegacyLibrary();
         const { map, hadError } = await loadLibraryAll();
         if (cancelled) return;
-        if (hadError) {
-          // 로드 실패: 기존 화면을 비우지 않음 (덮어쓰기 방지). 재시도 안내.
-          devWarn('라이브러리 로드 오류 - 기존 상태 유지');
-          setLibrary(prev => (Object.keys(prev).length > 0 ? prev : (map || {})));
+        // 받아온 카드가 있으면 무조건 반영. 비어있고 에러일 때만 기존 유지.
+        const gotCount = Object.values(map || {}).reduce((s, a) => s + (a?.length || 0), 0);
+        if (gotCount > 0) {
+          setLibrary(map);
+        } else if (hadError) {
+          setLibrary(prev => (Object.keys(prev).length > 0 ? prev : {}));
         } else {
           setLibrary(map || {});
         }
@@ -3629,6 +3629,20 @@ export default function App() {
       }
       const screenCount = Object.values(library).reduce((s, a) => s + (a?.length || 0), 0);
 
+      // 첫 행의 실제 구조 확인 (parse 되는지)
+      let sample = '없음';
+      if ((res.rows || []).length > 0) {
+        const first = res.rows[0];
+        const vtype = typeof first.value;
+        let parsed = null, perr = '';
+        try { parsed = JSON.parse(first.value); } catch (e) { perr = 'parse실패:' + e.message; }
+        if (parsed) {
+          sample = `key=${first.key} | 필드=[${Object.keys(parsed).join(',')}] | categoryId=${parsed.categoryId} | image길이=${(parsed.image||'').length}`;
+        } else {
+          sample = `key=${first.key} | value타입=${vtype} | ${perr} | 앞부분=${String(first.value).slice(0,50)}`;
+        }
+      }
+
       // 2) 저장 테스트: 작은 테스트 카드 하나 저장 시도
       let saveTest = '?';
       try {
@@ -3641,6 +3655,7 @@ export default function App() {
       const catList = categories.map(c => `${c.name}: ${byCat[c.id] || 0}`).join(', ');
       setDiagResult(
         `DB저장 카드수: ${dbCount}${err} | 화면: ${screenCount} | 저장테스트: ${saveTest}\n` +
+        `첫카드: ${sample}\n` +
         `카테고리별: ${catList} | 미분류: ${byCat['미분류'] || 0}`
       );
     } catch (e) {
