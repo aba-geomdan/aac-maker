@@ -2023,7 +2023,7 @@ const CategoryManager = ({ categories, onUpdate, onClose }) => {
 // ─────────────────────────────────────────────────────────────
 const LibraryView = ({
   library, categories, libraryCatId, setLibraryCatId,
-  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, onDiagnose, cardSearch, setCardSearch,
+  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, onDiagnose, diagResult, cardSearch, setCardSearch,
 }) => {
   // 탭 목록: 카테고리들 + 미분류
   const NONE = '__none__';
@@ -2070,6 +2070,13 @@ const LibraryView = ({
           </button>
         </div>
       </div>
+
+      {/* 진단 결과 배너 */}
+      {diagResult && (
+        <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 whitespace-pre-wrap" style={{ fontFamily: 'monospace' }}>
+          {diagResult}
+        </div>
+      )}
 
       {/* 카테고리 선택 (드롭다운) */}
       <div className="mb-3">
@@ -3123,6 +3130,7 @@ export default function App() {
   const [libraryCatId, setLibraryCatId] = useState(null); // 라이브러리에서 보고 있는 카테고리 (null=미분류)
   const [librarySelected, setLibrarySelected] = useState(() => new Set()); // 체크된 카드 id
   const [librarySearch, setLibrarySearch] = useState(''); // 카테고리 화면 전용 검색어 (인쇄판과 분리)
+  const [diagResult, setDiagResult] = useState(null); // 진단 결과 (화면 표시용)
 
   // 튜토리얼
   const [showTutorial, setShowTutorial] = useState(false);
@@ -3605,11 +3613,12 @@ export default function App() {
   // 선택한 카드 여러 장 한꺼번에 삭제
   // 진단: DB에 실제 저장된 라이브러리 카드 수를 조회해 알려줌
   const diagnoseLibrary = useCallback(async () => {
+    setDiagResult('진단 중...');
     try {
+      // 1) DB에서 카드 조회
       const res = await dataList(LIBCARD_PREFIX);
       const dbCount = (res.rows || []).length;
-      const err = res._error ? ' (로드 오류 발생!)' : '';
-      // 카테고리별 집계
+      const err = res._error ? ' ⚠️로드오류' : '';
       const byCat = {};
       for (const r of (res.rows || [])) {
         try {
@@ -3618,16 +3627,24 @@ export default function App() {
           byCat[k] = (byCat[k] || 0) + 1;
         } catch {}
       }
-      const catList = categories.map(c => `${c.name}: ${byCat[c.id] || 0}`).join('\n');
       const screenCount = Object.values(library).reduce((s, a) => s + (a?.length || 0), 0);
-      safeAlert(
-        `[저장 상태 진단]${err}\n\n` +
-        `DB에 저장된 카드: ${dbCount}개\n` +
-        `화면에 보이는 카드: ${screenCount}개\n\n` +
-        `카테고리별 DB 카드수:\n${catList}\n미분류: ${byCat['미분류'] || 0}`
+
+      // 2) 저장 테스트: 작은 테스트 카드 하나 저장 시도
+      let saveTest = '?';
+      try {
+        const testCard = { id: 'diagtest_' + Date.now(), image: 'data:image/png;base64,test', label: '진단테스트', categoryId: null };
+        const ok = await saveLibraryCard(testCard);
+        saveTest = ok ? '성공' : '실패';
+        if (ok) await deleteLibraryCard(testCard.id); // 테스트 카드 삭제
+      } catch (e) { saveTest = '에러:' + (e?.message || e); }
+
+      const catList = categories.map(c => `${c.name}: ${byCat[c.id] || 0}`).join(', ');
+      setDiagResult(
+        `DB저장 카드수: ${dbCount}${err} | 화면: ${screenCount} | 저장테스트: ${saveTest}\n` +
+        `카테고리별: ${catList} | 미분류: ${byCat['미분류'] || 0}`
       );
     } catch (e) {
-      safeAlert('진단 실패: ' + (e?.message || e));
+      setDiagResult('진단 실패: ' + (e?.message || String(e)));
     }
   }, [categories, library]);
 
@@ -5326,6 +5343,7 @@ export default function App() {
               onImportClick={handleLibraryImportClick}
               onManageCategories={() => setShowCategoryManager(true)}
               onDiagnose={diagnoseLibrary}
+              diagResult={diagResult}
               onDeleteCard={deleteLibraryCardById}
               onDeleteSelected={deleteSelectedLibraryCards}
               cardSearch={librarySearch}
