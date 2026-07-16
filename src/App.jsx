@@ -5314,7 +5314,12 @@ export default function App() {
                       if (name === null) return; // 취소 → 아무것도 안 함
                       // 이름 있으면 그 이름으로, 없으면 자동 이름으로 저장
                       saveCurrentToHistory(name.trim() || undefined).catch(err => devWarn('저장 실패:', err));
-                      handlePrint();
+                      // 미리보기로 전환 후, 렌더가 끝날 시간을 주고 인쇄창 실행
+                      setView('preview');
+                      setTimeout(() => {
+                        window.scrollTo({ top: 0, behavior: 'auto' });
+                        doActualPrint();
+                      }, 400);
                     }}
                     className="flex items-center justify-center gap-2 px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
                   >
