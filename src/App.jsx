@@ -3190,30 +3190,37 @@ export default function App() {
 
   // ───── 라이브러리 로드 (로그인 후 1회) ─────
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !authChecked) return;
     let cancelled = false;
     libraryLoadedRef.current = false;
     (async () => {
-      try {
-        const { map, hadError } = await loadLibraryAll();
+      // 초기 로드 타이밍(토큰 준비 전) 문제 대비: 카드를 받을 때까지 몇 번 재시도
+      for (let attempt = 0; attempt < 6; attempt++) {
         if (cancelled) return;
-        // 받아온 카드가 있으면 무조건 반영. 비어있고 에러일 때만 기존 유지.
-        const gotCount = Object.values(map || {}).reduce((s, a) => s + (a?.length || 0), 0);
-        if (gotCount > 0) {
-          setLibrary(map);
-        } else if (hadError) {
-          setLibrary(prev => (Object.keys(prev).length > 0 ? prev : {}));
-        } else {
-          setLibrary(map || {});
+        try {
+          const { map, hadError } = await loadLibraryAll();
+          if (cancelled) return;
+          const gotCount = Object.values(map || {}).reduce((s, a) => s + (a?.length || 0), 0);
+          if (gotCount > 0) {
+            setLibrary(map);
+            break; // 성공 → 종료
+          }
+          // 0개인데 에러였으면 재시도, 진짜 0개(에러 아님)면 첫 시도 후 종료
+          if (!hadError && attempt >= 1) {
+            setLibrary(map || {});
+            break;
+          }
+        } catch (e) {
+          devWarn('라이브러리 로드 실패(재시도):', e);
         }
-      } catch (e) {
-        devWarn('라이브러리 로드 실패:', e);
+        // 재시도 전 대기 (점점 길게: 0.5s, 1s, 1.5s...)
+        await new Promise(res => setTimeout(res, 500 * (attempt + 1)));
       }
       if (!cancelled) libraryLoadedRef.current = true;
     })();
     return () => { cancelled = true; libraryLoadedRef.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser]);
+  }, [currentUser, authChecked]);
   useEffect(() => {
     if (filterCategoryId) setCategoryOpen(true);
   }, [filterCategoryId]);
