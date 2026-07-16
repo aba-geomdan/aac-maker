@@ -4629,13 +4629,6 @@ export default function App() {
               onChange={handleImportChange}
               className="hidden"
             />
-            <button
-              onClick={handlePrint}
-              className="flex items-center gap-1.5 px-2 sm:px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-lg shadow-sm transition"
-            >
-              <FileDown className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">PDF로 저장</span>
-            </button>
 
             {/* 구분선 */}
             <div className="hidden sm:block h-6 w-px bg-stone-200 mx-1 flex-shrink-0" />
