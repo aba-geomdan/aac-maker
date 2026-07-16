@@ -300,7 +300,7 @@ async function dataList(prefix, userIdOverride) {
     if (!uid) return { keys: [], rows: [] };
     const filter = prefix ? `&key=like.${encodeURIComponent(prefix)}*` : '';
     // 응답이 크면(이미지 base64 다수) 한 번에 받다가 실패하므로, limit/offset으로 나눠 받음
-    const PAGE = 40;
+    const PAGE = 150;
     let all = [];
     let offset = 0;
     for (let guard = 0; guard < 200; guard++) {
