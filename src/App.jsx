@@ -5304,31 +5304,19 @@ export default function App() {
                 )}
               </div>
 
-              {/* 저장 / 인쇄 버튼 (카드 있을 때만) - 편집창에서 바로 저장·인쇄 */}
+              {/* 인쇄 버튼 (카드 있을 때만) - 누르면 이름 물어보고 저장+인쇄 */}
               {cards.length > 0 && (
                 <div className="no-print flex items-center justify-center gap-2 mb-4 flex-wrap">
                   <button
-                    onClick={async () => {
-                      if (visibleCards.length === 0) { safeAlert('저장할 카드가 없습니다.'); return; }
-                      const name = safePrompt('아이 이름(또는 세트 이름)을 적어주세요:', '');
-                      if (name === null) return;
-                      if (!name.trim()) { safeAlert('이름을 입력해주세요.'); return; }
-                      try {
-                        await saveCurrentToHistory(name.trim());
-                        safeAlert(`"${name.trim()}"(으)로 저장했습니다.\n사이드바 "이전 인쇄 묶음"에서 불러올 수 있어요.`);
-                      } catch (err) {
-                        devWarn('저장 실패:', err);
-                        safeAlert('저장에 실패했습니다. 다시 시도해주세요.');
-                      }
+                    onClick={() => {
+                      if (visibleCards.length === 0) { safeAlert('인쇄할 카드가 없습니다.'); return; }
+                      const name = safePrompt('아이 이름(또는 세트 이름)을 적어주세요.\n비워두면 이름 없이 인쇄만 합니다.', '');
+                      if (name === null) return; // 취소 → 아무것도 안 함
+                      // 이름 있으면 그 이름으로, 없으면 자동 이름으로 저장
+                      saveCurrentToHistory(name.trim() || undefined).catch(err => devWarn('저장 실패:', err));
+                      handlePrint();
                     }}
-                    className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-stone-300 hover:bg-stone-50 text-stone-800 text-sm font-semibold rounded-lg shadow-sm transition"
-                  >
-                    <FolderPlus className="w-4 h-4" />
-                    아이 이름으로 저장
-                  </button>
-                  <button
-                    onClick={handlePrint}
-                    className="flex items-center justify-center gap-2 px-5 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
+                    className="flex items-center justify-center gap-2 px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
                   >
                     <FileDown className="w-4 h-4" />
                     인쇄 / PDF 저장
@@ -5466,27 +5454,11 @@ export default function App() {
                     )}
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={async () => {
-                          if (visibleCards.length === 0) { safeAlert('저장할 카드가 없습니다.'); return; }
-                          const name = safePrompt('아이 이름(또는 세트 이름)을 적어주세요:', '');
-                          if (name === null) return; // 취소
-                          if (!name.trim()) { safeAlert('이름을 입력해주세요.'); return; }
-                          try {
-                            await saveCurrentToHistory(name.trim());
-                            safeAlert(`"${name.trim()}"(으)로 저장했습니다.\n사이드바 "이전 인쇄 묶음"에서 불러올 수 있어요.`);
-                          } catch (err) {
-                            devWarn('저장 실패:', err);
-                            safeAlert('저장에 실패했습니다. 다시 시도해주세요.');
-                          }
-                        }}
-                        className="flex items-center justify-center gap-2 px-5 py-2.5 bg-white border border-stone-300 hover:bg-stone-50 text-stone-800 text-sm font-semibold rounded-lg shadow-sm transition"
-                      >
-                        <FolderPlus className="w-4 h-4" />
-                        아이 이름으로 저장
-                      </button>
-                      <button
                         onClick={() => {
-                          saveCurrentToHistory().catch(err => devWarn('히스토리 저장 실패:', err));
+                          if (visibleCards.length === 0) { safeAlert('인쇄할 카드가 없습니다.'); return; }
+                          const name = safePrompt('아이 이름(또는 세트 이름)을 적어주세요.\n비워두면 이름 없이 인쇄만 합니다.', '');
+                          if (name === null) return; // 취소
+                          saveCurrentToHistory(name.trim() || undefined).catch(err => devWarn('저장 실패:', err));
                           doActualPrint();
                         }}
                         className="flex items-center justify-center gap-2 px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
