@@ -3506,7 +3506,7 @@ export default function App() {
     if (withCards) {
       setLibraryCatId(withCards.id);
     } else if ((library['__none__'] || []).length > 0) {
-      setLibraryCatId(null); // 미분류에 카드가 있으면 미분류로
+      // 미분류에 카드가 있으면 미분류(null) 유지 — 이미 null이므로 setState 불필요
     } else {
       setLibraryCatId(categories[0].id);
     }
