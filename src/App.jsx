@@ -299,12 +299,27 @@ async function dataList(prefix, userIdOverride) {
     if (!uid) { const u = await getCurrentAuthUser(); uid = u?.id; }
     if (!uid) return { keys: [], rows: [] };
     const filter = prefix ? `&key=like.${encodeURIComponent(prefix)}*` : '';
-    const url = `${SUPABASE_URL}/rest/v1/aac_data?user_id=eq.${uid}&select=key,value${filter}`;
-    const r = await fetch(url, { headers });
-    if (!r.ok) return { keys: [], rows: [] };
-    const rows = await r.json();
-    return { keys: (rows || []).map((row) => row.key), rows: rows || [] };
-  } catch (e) { return { keys: [], rows: [] }; }
+    // 응답이 크면(이미지 base64 다수) 한 번에 받다가 실패하므로, limit/offset으로 나눠 받음
+    const PAGE = 40;
+    let all = [];
+    let offset = 0;
+    for (let guard = 0; guard < 200; guard++) {
+      const url = `${SUPABASE_URL}/rest/v1/aac_data?user_id=eq.${uid}&select=key,value${filter}&order=key.asc&limit=${PAGE}&offset=${offset}`;
+      const r = await fetch(url, { headers });
+      if (!r.ok) {
+        if (offset === 0) return { keys: [], rows: [], _error: true };
+        break;
+      }
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      all = all.concat(rows);
+      if (rows.length < PAGE) break; // 마지막 페이지
+      offset += PAGE;
+    }
+    return { keys: all.map((row) => row.key), rows: all };
+  } catch (e) {
+    return { keys: [], rows: [], _error: true };
+  }
 }
 
 // 히스토리: 인덱스 + 개별 묶음 분리 저장
@@ -664,6 +679,7 @@ const deleteLibraryCard = async (cardId) => {
 // 신규(카드 단위) + 구버전(카테고리 통째) 둘 다 읽어 합침 (호환).
 const loadLibraryAll = async () => {
   const map = {}; // { catKey: cards[] }
+  let hadError = false;
   const push = (catKey, card) => {
     if (!map[catKey]) map[catKey] = [];
     map[catKey].push(card);
@@ -671,13 +687,14 @@ const loadLibraryAll = async () => {
   try {
     // 신규: 카드 단위 행
     const cardRes = await dataList(LIBCARD_PREFIX);
+    if (cardRes._error) hadError = true;
     for (const r of (cardRes.rows || [])) {
       try {
         const c = JSON.parse(r.value);
         if (c && c.image) push(c.categoryId || LIBRARY_NONE, c);
       } catch {}
     }
-  } catch (e) { devWarn('라이브러리(카드) 로드 실패:', e); }
+  } catch (e) { devWarn('라이브러리(카드) 로드 실패:', e); hadError = true; }
   try {
     // 구버전: 카테고리 통째 행 (있으면 흡수)
     const oldRes = await dataList(LIBRARY_PREFIX);
@@ -689,7 +706,7 @@ const loadLibraryAll = async () => {
       } catch {}
     }
   } catch {}
-  return map;
+  return { map, hadError };
 };
 
 // 라이브러리에서 카테고리 하나의 카드 전부 삭제 (카테고리 자체를 지울 때)
@@ -3163,8 +3180,15 @@ export default function App() {
       try {
         // 구버전(카테고리 통째 저장) → 신규(카드 단위)로 자동 이전
         await migrateLegacyLibrary();
-        const map = await loadLibraryAll();
-        if (!cancelled) setLibrary(map || {});
+        const { map, hadError } = await loadLibraryAll();
+        if (cancelled) return;
+        if (hadError) {
+          // 로드 실패: 기존 화면을 비우지 않음 (덮어쓰기 방지). 재시도 안내.
+          devWarn('라이브러리 로드 오류 - 기존 상태 유지');
+          setLibrary(prev => (Object.keys(prev).length > 0 ? prev : (map || {})));
+        } else {
+          setLibrary(map || {});
+        }
       } catch (e) {
         devWarn('라이브러리 로드 실패:', e);
       }
