@@ -1974,7 +1974,7 @@ const CategoryManager = ({ categories, onUpdate, onClose }) => {
 // ─────────────────────────────────────────────────────────────
 const LibraryView = ({
   library, categories, libraryCatId, setLibraryCatId,
-  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, cardSearch, setCardSearch,
+  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, cardSearch, setCardSearch,
 }) => {
   // 탭 목록: 카테고리들 + 미분류
   const NONE = '__none__';
@@ -2154,6 +2154,12 @@ const LibraryView = ({
           <div className="flex-1 text-sm font-bold text-stone-800 text-center tabular-nums">
             {selectedCount}장 선택됨
           </div>
+          <button
+            onClick={onDeleteSelected}
+            className="px-4 py-2.5 bg-white border border-red-200 text-red-600 hover:bg-red-50 text-sm font-bold rounded-lg transition flex items-center gap-1.5"
+          >
+            <Trash2 className="w-4 h-4" /> 선택 삭제
+          </button>
           <button
             onClick={onAddToPrint}
             className="px-5 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-bold rounded-lg transition flex items-center gap-2"
@@ -3512,6 +3518,23 @@ export default function App() {
       const n = new Set(prev); n.delete(cardId); return n;
     });
   }, []);
+
+  // 선택한 카드 여러 장 한꺼번에 삭제
+  const deleteSelectedLibraryCards = useCallback(async () => {
+    const ids = Array.from(librarySelected);
+    if (ids.length === 0) return;
+    if (!safeConfirm(`선택한 ${ids.length}장을 삭제할까요?`)) return;
+    const idSet = new Set(ids);
+    await Promise.all(ids.map(id => deleteLibraryCard(id).catch(e => devWarn('카드 삭제 실패:', e))));
+    setLibrary(prev => {
+      const next = {};
+      for (const [k, arr] of Object.entries(prev)) {
+        next[k] = (arr || []).filter(c => !idSet.has(c.id));
+      }
+      return next;
+    });
+    setLibrarySelected(new Set());
+  }, [librarySelected]);
 
   // useCallback으로 감싸서 함수 참조 안정화 (React.memo의 CardEditor가 불필요하게 리렌더링되는 것 방지)
   const updateCard = useCallback((id, updated) => {
@@ -5199,6 +5222,7 @@ export default function App() {
               onImportClick={handleLibraryImportClick}
               onManageCategories={() => setShowCategoryManager(true)}
               onDeleteCard={deleteLibraryCardById}
+              onDeleteSelected={deleteSelectedLibraryCards}
               cardSearch={librarySearch}
               setCardSearch={setLibrarySearch}
             />
