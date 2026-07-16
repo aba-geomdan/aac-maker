@@ -314,9 +314,12 @@ const CATEGORIES_KEY = 'aac_categories';
 // ───── 라이브러리(영구 보관) 저장 키 ─────
 // 카테고리별로 분리 저장: aac_library:{categoryId}  (카테고리 없음 = __none__)
 // 각 값 = JSON 배열 [{ id, image, originalImage, label, categoryId }]
-const LIBRARY_PREFIX = 'aac_library:';
+const LIBRARY_PREFIX = 'aac_library:';   // (구) 카테고리 통째 저장 — 로드 호환용으로만 사용
 const LIBRARY_NONE = '__none__';
 const LIBRARY_KEY = (categoryId) => `${LIBRARY_PREFIX}${categoryId || LIBRARY_NONE}`;
+// (신) 카드 1장 = 1행 저장. 값이 작아 크기 초과 없음.
+const LIBCARD_PREFIX = 'aac_libcard:';
+const LIBCARD_KEY = (cardId) => `${LIBCARD_PREFIX}${cardId}`;
 const DRAFT_KEY_PREFIX = 'aac_draft:'; // 작업 중 카드 자동 저장 (사용자별, localStorage만)
 const SESSION_HOURS = 24; // 로그인 유효 시간
 
@@ -625,49 +628,75 @@ const clearHistory = async (ownerFilter, auth) => {
 };
 
 // ───── 라이브러리(영구 보관) 저장소 ─────
-// 카테고리별로 카드 배열을 저장/로드. 인쇄판(cards)과 완전히 분리된 별도 저장.
+// 카드 1장 = aac_data 한 행(aac_libcard:{cardId}). 값이 작아 크기 초과 없음.
+// 각 값 = JSON { id, image, originalImage, label, categoryId }
 
-// 특정 카테고리의 라이브러리 카드 로드
-const loadLibraryCategory = async (categoryId) => {
-  try {
-    const row = await dataGet(LIBRARY_KEY(categoryId));
-    if (!row?.value) return [];
-    const arr = JSON.parse(row.value);
-    return Array.isArray(arr) ? arr : [];
-  } catch (e) { devWarn('라이브러리 로드 실패:', categoryId, e); return []; }
+// 카드 한 장 저장. 성공하면 true, 실패하면 false 반환 (호출부에서 사용자 알림).
+const saveLibraryCard = async (card) => {
+  const body = {
+    id: card.id,
+    image: card.image,
+    originalImage: card.originalImage || null,
+    label: card.label || '',
+    categoryId: card.categoryId || null,
+  };
+  const r = await dataSet(LIBCARD_KEY(card.id), JSON.stringify(body));
+  return !!r;
 };
 
-// 특정 카테고리의 라이브러리 카드 저장 (해당 카테고리 통째로 덮어쓰기)
-const saveLibraryCategory = async (categoryId, cards) => {
-  const clean = (cards || []).map(c => ({
-    id: c.id, image: c.image, originalImage: c.originalImage || null,
-    label: c.label || '', categoryId: categoryId || null,
-  }));
-  const r = await dataSet(LIBRARY_KEY(categoryId), JSON.stringify(clean));
-  if (!r) devWarn('라이브러리 저장 실패:', categoryId);
-  return r;
+// 여러 장 저장. { okCount, failCount, saved } 반환. saved=저장 성공한 카드 배열.
+const saveLibraryCards = async (cards) => {
+  let okCount = 0, failCount = 0;
+  const saved = [];
+  for (const c of (cards || [])) {
+    const ok = await saveLibraryCard(c).catch(() => false);
+    if (ok) { okCount++; saved.push(c); } else failCount++;
+  }
+  return { okCount, failCount, saved };
 };
 
-// 전체 라이브러리 로드 (모든 카테고리 + 카테고리 없음) → categoryId 별 맵으로 반환
+// 카드 한 장 삭제
+const deleteLibraryCard = async (cardId) => {
+  return dataDelete(LIBCARD_KEY(cardId)).catch(() => null);
+};
+
+// 전체 라이브러리 로드 → { [categoryId or '__none__']: cards[] } 맵
+// 신규(카드 단위) + 구버전(카테고리 통째) 둘 다 읽어 합침 (호환).
 const loadLibraryAll = async () => {
+  const map = {}; // { catKey: cards[] }
+  const push = (catKey, card) => {
+    if (!map[catKey]) map[catKey] = [];
+    map[catKey].push(card);
+  };
   try {
-    const res = await dataList(LIBRARY_PREFIX);
-    const map = {}; // { [categoryId or LIBRARY_NONE]: cards[] }
-    for (const r of (res.rows || [])) {
-      const catKey = r.key.slice(LIBRARY_PREFIX.length); // categoryId 또는 __none__
+    // 신규: 카드 단위 행
+    const cardRes = await dataList(LIBCARD_PREFIX);
+    for (const r of (cardRes.rows || [])) {
       try {
-        const arr = JSON.parse(r.value);
-        if (Array.isArray(arr)) map[catKey] = arr;
+        const c = JSON.parse(r.value);
+        if (c && c.image) push(c.categoryId || LIBRARY_NONE, c);
       } catch {}
     }
-    return map;
-  } catch (e) { devWarn('라이브러리 전체 로드 실패:', e); return {}; }
+  } catch (e) { devWarn('라이브러리(카드) 로드 실패:', e); }
+  try {
+    // 구버전: 카테고리 통째 행 (있으면 흡수)
+    const oldRes = await dataList(LIBRARY_PREFIX);
+    for (const r of (oldRes.rows || [])) {
+      const catKey = r.key.slice(LIBRARY_PREFIX.length);
+      try {
+        const arr = JSON.parse(r.value);
+        if (Array.isArray(arr)) arr.forEach(c => { if (c && c.image) push(catKey, c); });
+      } catch {}
+    }
+  } catch {}
+  return map;
 };
 
-// 라이브러리에서 카테고리 하나 통째로 삭제 (카테고리 자체를 지울 때)
-const deleteLibraryCategory = async (categoryId) => {
-  return dataDelete(LIBRARY_KEY(categoryId)).catch(() => null);
+// 라이브러리에서 카테고리 하나의 카드 전부 삭제 (카테고리 자체를 지울 때)
+const deleteLibraryCategoryCards = async (cards) => {
+  await Promise.all((cards || []).map(c => deleteLibraryCard(c.id)));
 };
+
 
 
 // 미리보기/iframe 환경에서 confirm/alert이 차단되는 경우 대비 안전 래퍼
@@ -1945,7 +1974,7 @@ const CategoryManager = ({ categories, onUpdate, onClose }) => {
 // ─────────────────────────────────────────────────────────────
 const LibraryView = ({
   library, categories, libraryCatId, setLibraryCatId,
-  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, cardSearch, setCardSearch,
+  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, cardSearch, setCardSearch,
 }) => {
   // 탭 목록: 카테고리들 + 미분류
   const NONE = '__none__';
@@ -1968,12 +1997,23 @@ const LibraryView = ({
 
   return (
     <div className="flex flex-col h-full">
+      {/* 헤더: 카테고리 관리 버튼 */}
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs text-stone-500">카테고리를 골라 카드를 보관하고, 인쇄판에 담아 쓰세요</p>
+        <button
+          onClick={onManageCategories}
+          className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-lg transition flex-shrink-0"
+        >
+          <Settings2 className="w-3.5 h-3.5" /> 카테고리 관리
+        </button>
+      </div>
+
       {/* 카테고리 탭 (가로 스크롤) */}
       <div className="flex gap-1.5 overflow-x-auto pb-2 mb-3 -mx-1 px-1">
         {categories.map((cat) => (
           <button
             key={cat.id}
-            onClick={() => { setLibraryCatId(cat.id); }}
+            onClick={() => { setLibraryCatId(cat.id); setCardSearch(''); }}
             className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 ${
               currentKey === cat.id
                 ? 'text-white shadow-sm'
@@ -1987,7 +2027,7 @@ const LibraryView = ({
           </button>
         ))}
         <button
-          onClick={() => setLibraryCatId(null)}
+          onClick={() => { setLibraryCatId(null); setCardSearch(''); }}
           className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 ${
             currentKey === NONE ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
           }`}
@@ -2056,10 +2096,12 @@ const LibraryView = ({
             {visible.map((card) => {
               const isSel = selected.has(card.id);
               return (
-                <button
+                <div
                   key={card.id}
                   onClick={() => toggle(card.id)}
-                  className={`relative rounded-xl overflow-hidden border-2 transition text-left ${
+                  role="button"
+                  tabIndex={0}
+                  className={`relative rounded-xl overflow-hidden border-2 transition text-left cursor-pointer ${
                     isSel ? 'border-amber-500 ring-2 ring-amber-200' : 'border-stone-200 hover:border-stone-300'
                   }`}
                 >
@@ -2083,7 +2125,17 @@ const LibraryView = ({
                   }`}>
                     <Check className="w-4 h-4" strokeWidth={3} />
                   </div>
-                </button>
+                  {/* 삭제 (버튼 중첩 방지 위해 span role=button) */}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); onDeleteCard?.(card.id); }}
+                    className="absolute top-1.5 left-1.5 w-6 h-6 rounded-full bg-white/80 border border-stone-200 text-stone-400 hover:text-red-500 hover:border-red-200 flex items-center justify-center transition"
+                    title="이 카드 삭제"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </span>
+                </div>
               );
             })}
           </div>
@@ -2998,6 +3050,7 @@ export default function App() {
   const libraryLoadedRef = useRef(false); // 로드 완료 전 저장 금지 (덮어쓰기 방지)
   const [libraryCatId, setLibraryCatId] = useState(null); // 라이브러리에서 보고 있는 카테고리 (null=미분류)
   const [librarySelected, setLibrarySelected] = useState(() => new Set()); // 체크된 카드 id
+  const [librarySearch, setLibrarySearch] = useState(''); // 카테고리 화면 전용 검색어 (인쇄판과 분리)
 
   // 튜토리얼
   const [showTutorial, setShowTutorial] = useState(false);
@@ -3007,6 +3060,7 @@ export default function App() {
   const [dragOverIndex, setDragOverIndex] = useState(null);
 
   const fileInputRef = useRef(null);
+  const libraryImageInputRef = useRef(null); // 카테고리 화면 전용 이미지 추가 인풋
 
   // 자동 저장 quota 초과 알림 - 세션당 1회만 (디바운스마다 토스트 띄우면 짜증남)
   const draftQuotaWarnedRef = useRef(false);
@@ -3330,16 +3384,17 @@ export default function App() {
     }
     if (newCards.length > 0) {
       if (viewMode === 'library') {
-        // 라이브러리 모드: 지금 보고 있는 카테고리의 라이브러리에 저장
+        // 라이브러리 모드: 지금 보고 있는 카테고리에 카드 단위로 저장 (성공분만 화면 반영)
         const NONE = '__none__';
         const key = libraryCatId || NONE;
         const tagged = newCards.map(c => ({ ...c, categoryId: libraryCatId || null }));
-        let toSave = null;
-        setLibrary(prev => {
-          toSave = [...(prev[key] || []), ...tagged];
-          return { ...prev, [key]: toSave };
-        });
-        saveLibraryCategory(libraryCatId, toSave || tagged).catch(e => devWarn('라이브러리 저장 실패:', e));
+        const { failCount, saved } = await saveLibraryCards(tagged);
+        if (saved.length > 0) {
+          setLibrary(prev => ({ ...prev, [key]: [...(prev[key] || []), ...saved] }));
+        }
+        if (failCount > 0) {
+          safeAlert(`${failCount}장이 저장되지 않았습니다.\n이미지 용량이 클 수 있어요. 다시 시도하거나 더 적게 나눠서 추가해보세요.`);
+        }
       } else {
         setCards(prev => [...prev, ...newCards]);
       }
@@ -3373,7 +3428,7 @@ export default function App() {
   };
 
   // 라이브러리에서 선택한 카드들을 인쇄판(cards)에 복사해 담기 (원본은 보존)
-  // 라이브러리에 카드 추가 (특정 카테고리로) + Supabase 저장
+  // 라이브러리에 카드 추가 (특정 카테고리로) + Supabase 저장 (카드 단위)
   // newCards: [{ image, originalImage?, label? }]  categoryId: null이면 미분류
   const addCardsToLibrary = useCallback(async (newCards, categoryId) => {
     const NONE = '__none__';
@@ -3385,18 +3440,41 @@ export default function App() {
       label: c.label || '',
       categoryId: categoryId || null,
     }));
-    if (prepared.length === 0) return;
-    let toSave = null;
-    setLibrary(prev => {
-      toSave = [...(prev[key] || []), ...prepared];
-      return { ...prev, [key]: toSave };
-    });
-    if (toSave) await saveLibraryCategory(categoryId, toSave);
+    if (prepared.length === 0) return { okCount: 0, failCount: 0 };
+    // 저장 성공한 카드만 화면에 반영 (저장 안 된 게 보이는 착각 방지)
+    const { okCount, failCount, saved } = await saveLibraryCards(prepared);
+    if (saved.length > 0) {
+      setLibrary(prev => ({ ...prev, [key]: [...(prev[key] || []), ...saved] }));
+    }
+    return { okCount, failCount };
   }, []);
 
+  // 카테고리 탭 진입 시(또는 카테고리 로드 후), 아무것도 안 골랐으면 첫 카테고리 자동 선택
+  useEffect(() => {
+    if (viewMode === 'library' && libraryCatId === null && categories.length > 0) {
+      setLibraryCatId(categories[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, categories]);
+  const handleCategoriesUpdate = useCallback((nextCategories) => {
+    const nextIds = new Set((nextCategories || []).map(c => c.id));
+    const removedIds = categories.map(c => c.id).filter(id => !nextIds.has(id));
+    setCategories(nextCategories);
+    if (removedIds.length > 0) {
+      removedIds.forEach(catId => {
+        const cardsInCat = library[catId] || [];
+        deleteLibraryCategoryCards(cardsInCat).catch(e => devWarn('카테고리 카드 정리 실패:', e));
+        setLibrary(prev => {
+          const next = { ...prev };
+          delete next[catId];
+          return next;
+        });
+      });
+      if (removedIds.includes(libraryCatId)) setLibraryCatId(null);
+    }
+  }, [categories, library, libraryCatId]);
+
   const addSelectedToPrint = useCallback(() => {
-    const NONE = '__none__';
-    // library 전체를 훑어 선택된 id의 카드를 찾아 복사 (새 id 부여 → 인쇄판에서 편집해도 원본 무관)
     const picked = [];
     Object.values(library).forEach(arr => {
       (arr || []).forEach(c => {
@@ -3417,6 +3495,23 @@ export default function App() {
     setViewMode('print');
     safeAlert(`${picked.length}장을 인쇄판에 담았습니다.`);
   }, [library, librarySelected]);
+
+  // 라이브러리 카드 한 장 삭제 (DB + 화면 + 선택목록)
+  const deleteLibraryCardById = useCallback(async (cardId) => {
+    if (!safeConfirm('이 카드를 카테고리에서 삭제할까요?')) return;
+    await deleteLibraryCard(cardId).catch(e => devWarn('카드 삭제 실패:', e));
+    setLibrary(prev => {
+      const next = {};
+      for (const [k, arr] of Object.entries(prev)) {
+        next[k] = (arr || []).filter(c => c.id !== cardId);
+      }
+      return next;
+    });
+    setLibrarySelected(prev => {
+      if (!prev.has(cardId)) return prev;
+      const n = new Set(prev); n.delete(cardId); return n;
+    });
+  }, []);
 
   // useCallback으로 감싸서 함수 참조 안정화 (React.memo의 CardEditor가 불필요하게 리렌더링되는 것 방지)
   const updateCard = useCallback((id, updated) => {
@@ -3624,13 +3719,13 @@ export default function App() {
     return `${m}/${d} ${h}:${min} 카드 ${cardsToName.length}장`;
   };
 
-  const saveCurrentToHistory = async () => {
+  const saveCurrentToHistory = async (customName) => {
     // 필터링 중이면 보이는 카드만, 아니면 전체
     const cardsToSave = visibleCards;
     if (cardsToSave.length === 0) return;
     const now = new Date();
     const dateStr = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const autoName = generateBundleName(cardsToSave);
+    const autoName = (customName && customName.trim()) ? customName.trim() : generateBundleName(cardsToSave);
 
     const snapshot = {
       id: `hist_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -3647,7 +3742,10 @@ export default function App() {
     };
 
     // 본인 묶음 중 중복 검사 - 본문 비교 필요하므로 본인 묶음만 본문 로드
-    const myStubs = history.filter(h => h.ownerUsername === currentUser?.email);
+    // 단, 아이 이름으로 저장할 땐 항상 새로 저장 (이름이 다르면 별개 세트로)
+    const myStubs = (customName && customName.trim())
+      ? []
+      : history.filter(h => h.ownerUsername === currentUser?.email);
     let duplicateId = null;
     for (const stub of myStubs) {
       // 인덱스 카드 수와 다르면 본문 로드 안 해도 됨
@@ -3912,11 +4010,15 @@ export default function App() {
         }
       }
       if (incoming.length === 0) { safeAlert('불러올 카드가 없습니다.'); return; }
-      await addCardsToLibrary(incoming, libraryCatId);
+      const { okCount, failCount } = await addCardsToLibrary(incoming, libraryCatId);
       const catName = libraryCatId
         ? (categories.find(c => c.id === libraryCatId)?.name || '카테고리')
         : '미분류';
-      safeAlert(`"${catName}"에 ${incoming.length}장을 추가했습니다.`);
+      if (failCount > 0) {
+        safeAlert(`"${catName}"에 ${okCount}장 저장됨.\n${failCount}장은 저장 실패(용량 문제일 수 있음).`);
+      } else {
+        safeAlert(`"${catName}"에 ${okCount}장을 추가했습니다.`);
+      }
     } catch (e) {
       devError('라이브러리 불러오기 실패:', e);
       safeAlert('파일을 읽을 수 없습니다. 올바른 .json 파일인지 확인해주세요.');
@@ -4045,7 +4147,7 @@ export default function App() {
       {showCategoryManager && (
         <CategoryManager
           categories={categories}
-          onUpdate={setCategories}
+          onUpdate={handleCategoriesUpdate}
           onClose={() => setShowCategoryManager(false)}
         />
       )}
@@ -4946,7 +5048,8 @@ export default function App() {
             </div>
           )}
 
-          {/* 카테고리 패널 (접기 가능) */}
+          {/* 카테고리 패널 (접기 가능) — 라이브러리 도입으로 숨김. 카테고리 관리는 상단 '카테고리' 탭에서. */}
+          {false && (
           <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden">
             <button
               onClick={() => setCategoryOpen(!categoryOpen)}
@@ -5040,6 +5143,7 @@ export default function App() {
               </div>
             )}
           </div>
+          )}
 
         </aside>
 
@@ -5062,7 +5166,7 @@ export default function App() {
                 viewMode === 'library' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-700'
               }`}
             >
-              <Folder className="w-4 h-4" /> 라이브러리
+              <Folder className="w-4 h-4" /> 카테고리
             </button>
           </div>
 
@@ -5075,6 +5179,14 @@ export default function App() {
               onChange={handleLibraryImportChange}
               className="hidden"
             />
+            <input
+              ref={libraryImageInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              multiple
+              onChange={onFileChange}
+              className="hidden"
+            />
             <LibraryView
               library={library}
               categories={categories}
@@ -5083,10 +5195,12 @@ export default function App() {
               selected={librarySelected}
               setSelected={setLibrarySelected}
               onAddToPrint={addSelectedToPrint}
-              onAddImagesClick={() => fileInputRef.current?.click()}
+              onAddImagesClick={() => libraryImageInputRef.current?.click()}
               onImportClick={handleLibraryImportClick}
-              cardSearch={cardSearch}
-              setCardSearch={setCardSearch}
+              onManageCategories={() => setShowCategoryManager(true)}
+              onDeleteCard={deleteLibraryCardById}
+              cardSearch={librarySearch}
+              setCardSearch={setLibrarySearch}
             />
             </>
           ) : view === 'edit' ? (
@@ -5267,16 +5381,37 @@ export default function App() {
                         <span>한글 폰트 로딩 중...</span>
                       </div>
                     )}
-                    <button
-                      onClick={() => {
-                        saveCurrentToHistory().catch(err => devWarn('히스토리 저장 실패:', err));
-                        doActualPrint();
-                      }}
-                      className="flex items-center justify-center gap-2 px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
-                    >
-                      <FileDown className="w-4 h-4" />
-                      인쇄 / PDF 저장
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          if (visibleCards.length === 0) { safeAlert('저장할 카드가 없습니다.'); return; }
+                          const name = safePrompt('아이 이름(또는 세트 이름)을 적어주세요:', '');
+                          if (name === null) return; // 취소
+                          if (!name.trim()) { safeAlert('이름을 입력해주세요.'); return; }
+                          try {
+                            await saveCurrentToHistory(name.trim());
+                            safeAlert(`"${name.trim()}"(으)로 저장했습니다.\n사이드바 "이전 인쇄 묶음"에서 불러올 수 있어요.`);
+                          } catch (err) {
+                            devWarn('저장 실패:', err);
+                            safeAlert('저장에 실패했습니다. 다시 시도해주세요.');
+                          }
+                        }}
+                        className="flex items-center justify-center gap-2 px-5 py-2.5 bg-white border border-stone-300 hover:bg-stone-50 text-stone-800 text-sm font-semibold rounded-lg shadow-sm transition"
+                      >
+                        <FolderPlus className="w-4 h-4" />
+                        아이 이름으로 저장
+                      </button>
+                      <button
+                        onClick={() => {
+                          saveCurrentToHistory().catch(err => devWarn('히스토리 저장 실패:', err));
+                          doActualPrint();
+                        }}
+                        className="flex items-center justify-center gap-2 px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
+                      >
+                        <FileDown className="w-4 h-4" />
+                        인쇄 / PDF 저장
+                      </button>
+                    </div>
                   </div>
 
                   <PrintPreview
