@@ -271,7 +271,7 @@ async function dataSet(key, value) {
     const headers = await authHeaders();
     const u = await getCurrentAuthUser();
     if (!u?.id) return null;
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/aac_data`, {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/aac_data?on_conflict=user_id,key`, {
       method: 'POST',
       headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ user_id: u.id, key, value, updated_at: new Date().toISOString() }),
@@ -2023,7 +2023,7 @@ const CategoryManager = ({ categories, onUpdate, onClose }) => {
 // ─────────────────────────────────────────────────────────────
 const LibraryView = ({
   library, categories, libraryCatId, setLibraryCatId,
-  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, cardSearch, setCardSearch,
+  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, onDiagnose, cardSearch, setCardSearch,
 }) => {
   // 탭 목록: 카테고리들 + 미분류
   const NONE = '__none__';
@@ -2054,12 +2054,21 @@ const LibraryView = ({
       {/* 헤더: 카테고리 관리 버튼 */}
       <div className="flex items-center justify-between mb-2">
         <p className="text-xs text-stone-500">카테고리를 골라 카드를 보관하고, 인쇄판에 담아 쓰세요</p>
-        <button
-          onClick={onManageCategories}
-          className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-lg transition flex-shrink-0"
-        >
-          <Settings2 className="w-3.5 h-3.5" /> 카테고리 관리
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={onDiagnose}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition"
+            title="저장 상태 진단"
+          >
+            🔍 진단
+          </button>
+          <button
+            onClick={onManageCategories}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-lg transition"
+          >
+            <Settings2 className="w-3.5 h-3.5" /> 카테고리 관리
+          </button>
+        </div>
       </div>
 
       {/* 카테고리 선택 (드롭다운) */}
@@ -3594,6 +3603,34 @@ export default function App() {
   }, []);
 
   // 선택한 카드 여러 장 한꺼번에 삭제
+  // 진단: DB에 실제 저장된 라이브러리 카드 수를 조회해 알려줌
+  const diagnoseLibrary = useCallback(async () => {
+    try {
+      const res = await dataList(LIBCARD_PREFIX);
+      const dbCount = (res.rows || []).length;
+      const err = res._error ? ' (로드 오류 발생!)' : '';
+      // 카테고리별 집계
+      const byCat = {};
+      for (const r of (res.rows || [])) {
+        try {
+          const c = JSON.parse(r.value);
+          const k = c.categoryId || '미분류';
+          byCat[k] = (byCat[k] || 0) + 1;
+        } catch {}
+      }
+      const catList = categories.map(c => `${c.name}: ${byCat[c.id] || 0}`).join('\n');
+      const screenCount = Object.values(library).reduce((s, a) => s + (a?.length || 0), 0);
+      safeAlert(
+        `[저장 상태 진단]${err}\n\n` +
+        `DB에 저장된 카드: ${dbCount}개\n` +
+        `화면에 보이는 카드: ${screenCount}개\n\n` +
+        `카테고리별 DB 카드수:\n${catList}\n미분류: ${byCat['미분류'] || 0}`
+      );
+    } catch (e) {
+      safeAlert('진단 실패: ' + (e?.message || e));
+    }
+  }, [categories, library]);
+
   const deleteSelectedLibraryCards = useCallback(async () => {
     const ids = Array.from(librarySelected);
     if (ids.length === 0) return;
@@ -5288,6 +5325,7 @@ export default function App() {
               onAddImagesClick={() => libraryImageInputRef.current?.click()}
               onImportClick={handleLibraryImportClick}
               onManageCategories={() => setShowCategoryManager(true)}
+              onDiagnose={diagnoseLibrary}
               onDeleteCard={deleteLibraryCardById}
               onDeleteSelected={deleteSelectedLibraryCards}
               cardSearch={librarySearch}
