@@ -129,6 +129,109 @@ async function authHeaders() {
 }
 
 // =====================================================================
+// Storage API (Private 버킷 aac-cards) — aac-storage Edge Function 경유
+//  - 이미지 바이너리는 Storage에, aac_data 행에는 경로만.
+//  - 서명 URL 발급/업로드/삭제 전부 서버(service_role)에서. 남의 경로는 서버가 거부.
+// =====================================================================
+const AAC_STORAGE_FN = () => `${SUPABASE_URL}/functions/v1/aac-storage`;
+
+// data URL / base64 문자열에서 contentType 추정
+function _guessContentType(dataUrl) {
+  if (typeof dataUrl === 'string') {
+    const m = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
+    if (m) return m[1];
+  }
+  return 'image/jpeg';
+}
+
+// 카드 이미지 1개 업로드. kind: '' (표시용) | 'orig' (원본).
+// 성공 시 저장 경로(string) 반환, 실패 시 null.
+async function storageUpload(cardId, dataUrl, kind = '') {
+  try {
+    if (!dataUrl || typeof dataUrl !== 'string') return null;
+    const headers = await authHeaders();
+    const r = await fetch(AAC_STORAGE_FN(), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        action: 'upload',
+        cardId,
+        kind,
+        contentType: _guessContentType(dataUrl),
+        base64: dataUrl, // Edge Function이 data: 접두 제거 처리
+      }),
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j?.path || null;
+  } catch (e) { devWarn('storageUpload 실패:', e); return null; }
+}
+
+// 경로 배열 → 서명 URL 맵 { path: url|null }. 남의 경로/에러는 null.
+async function storageSign(paths) {
+  const out = {};
+  const list = (paths || []).filter(Boolean);
+  if (!list.length) return out;
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(AAC_STORAGE_FN(), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'sign', paths: list }),
+    });
+    if (!r.ok) return out;
+    const j = await r.json();
+    for (const it of (j?.urls || [])) out[it.path] = it.url || null;
+    return out;
+  } catch (e) { devWarn('storageSign 실패:', e); return out; }
+}
+
+// 경로 배열 삭제 (본인 것만 서버가 처리).
+async function storageRemove(paths) {
+  const list = (paths || []).filter(Boolean);
+  if (!list.length) return true;
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(AAC_STORAGE_FN(), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'remove', paths: list }),
+    });
+    return r.ok;
+  } catch (e) { devWarn('storageRemove 실패:', e); return false; }
+}
+
+// ── 서명 URL 세션 캐시 ──────────────────────────────
+// 만료 1시간(SIGN_TTL)보다 짧게(50분) 캐시해서 만료 전 재발급.
+const _signedUrlCache = new Map(); // path -> { url, exp }
+const _SIGNED_TTL_MS = 50 * 60 * 1000;
+
+// 경로 배열 → { path: url } 맵. 캐시에 없는 것만 서버에서 일괄 발급.
+async function resolveSignedUrls(paths) {
+  const now = Date.now();
+  const want = [...new Set((paths || []).filter(Boolean))];
+  const result = {};
+  const missing = [];
+  for (const p of want) {
+    const hit = _signedUrlCache.get(p);
+    if (hit && hit.exp > now && hit.url) result[p] = hit.url;
+    else missing.push(p);
+  }
+  if (missing.length) {
+    const signed = await storageSign(missing);
+    for (const p of missing) {
+      const url = signed[p] || null;
+      if (url) {
+        _signedUrlCache.set(p, { url, exp: now + _SIGNED_TTL_MS });
+        result[p] = url;
+      }
+    }
+  }
+  return result;
+}
+
+
+// =====================================================================
 // Auth API
 // =====================================================================
 async function signInWithPassword(email, password) {
@@ -643,15 +746,33 @@ const clearHistory = async (ownerFilter, auth) => {
 };
 
 // ───── 라이브러리(영구 보관) 저장소 ─────
-// 카드 1장 = aac_data 한 행(aac_libcard:{cardId}). 값이 작아 크기 초과 없음.
-// 각 값 = JSON { id, image, originalImage, label, categoryId }
+// 카드 1장 = aac_data 한 행(aac_libcard:{cardId}).
+// 신규 값 = JSON { id, imagePath, originalPath, label, categoryId }  ← 이미지는 Storage 경로만
+// (구버전 값 = { id, image(base64), originalImage(base64), ... } — 로드 시 호환 처리)
 
-// 카드 한 장 저장. 성공하면 true, 실패하면 false 반환 (호출부에서 사용자 알림).
+// 카드 한 장 저장. 이미지는 Storage(aac-cards)에 업로드하고 행에는 경로만 저장.
+// 성공하면 true, 실패하면 false 반환 (호출부에서 사용자 알림).
 const saveLibraryCard = async (card) => {
+  // 이미 경로만 있는 카드(재저장)면 업로드 생략, 아니면 base64를 Storage로 올림.
+  let imagePath = card.imagePath || null;
+  let originalPath = card.originalPath || null;
+
+  // 표시용 이미지: card.image 가 data URL 이면 업로드해서 경로 확보
+  if (!imagePath && typeof card.image === 'string' && card.image.startsWith('data:')) {
+    imagePath = await storageUpload(card.id, card.image, '');
+    if (!imagePath) return false; // 업로드 실패 → 저장 실패로 처리(데이터 유실 방지)
+  }
+  // 원본 이미지(있을 때만)
+  const origSrc = card.originalImage;
+  if (!originalPath && typeof origSrc === 'string' && origSrc.startsWith('data:')) {
+    originalPath = await storageUpload(card.id, origSrc, 'orig');
+    // 원본 업로드 실패는 치명적이지 않음 → 경로 없이 진행
+  }
+
   const body = {
     id: card.id,
-    image: card.image,
-    originalImage: card.originalImage || null,
+    imagePath,
+    originalPath,
     label: card.label || '',
     categoryId: card.categoryId || null,
   };
@@ -684,6 +805,7 @@ const loadLibraryAll = async () => {
     if (!map[catKey]) map[catKey] = [];
     map[catKey].push(card);
   };
+  const needSign = []; // 서명 필요한 카드 목록 (신규 경로 방식)
   try {
     // 신규: 카드 단위 행
     const cardRes = await dataList(LIBCARD_PREFIX);
@@ -691,7 +813,15 @@ const loadLibraryAll = async () => {
     for (const r of (cardRes.rows || [])) {
       try {
         const c = JSON.parse(r.value);
-        if (c && c.image) push(c.categoryId || LIBRARY_NONE, c);
+        if (!c) continue;
+        if (c.imagePath) {
+          // 신규(경로) 방식: 나중에 서명 URL을 image/originalImage에 채움
+          push(c.categoryId || LIBRARY_NONE, c);
+          needSign.push(c);
+        } else if (c.image) {
+          // 구버전(base64) 방식: 그대로 사용
+          push(c.categoryId || LIBRARY_NONE, c);
+        }
       } catch {}
     }
   } catch (e) { devWarn('라이브러리(카드) 로드 실패:', e); hadError = true; }
@@ -706,6 +836,21 @@ const loadLibraryAll = async () => {
       } catch {}
     }
   } catch {}
+
+  // 경로 방식 카드들: 서명 URL 일괄 발급 후 image/originalImage 채우기
+  if (needSign.length) {
+    const allPaths = [];
+    for (const c of needSign) {
+      if (c.imagePath) allPaths.push(c.imagePath);
+      if (c.originalPath) allPaths.push(c.originalPath);
+    }
+    const urls = await resolveSignedUrls(allPaths);
+    for (const c of needSign) {
+      c.image = (c.imagePath && urls[c.imagePath]) || '';
+      c.originalImage = (c.originalPath && urls[c.originalPath]) || null;
+    }
+  }
+
   return { map, hadError };
 };
 
@@ -744,6 +889,63 @@ const migrateLegacyLibrary = async () => {
     }
   } catch (e) { devWarn('라이브러리 이전 실패:', e); }
   return migrated;
+};
+
+// ───── base64 → Storage 마이그레이션 (2-pass 안전) ─────
+// 본인 계정의 라이브러리 카드 중 아직 base64(image)로 저장된 것들을:
+//   1) Storage(aac-cards)에 업로드 → 경로 확보
+//   2) aac_data 행을 경로 방식으로 갱신 (저장 성공 확인)
+//   3) 위 둘이 성공한 카드에 한해서만 완료 처리 (base64는 행에서 이미 빠짐)
+// 실패한 카드는 원본(base64) 행을 그대로 두어 유실 방지.
+// onProgress({ done, total, ok, fail }) 콜백으로 진행률 통지.
+// 반환: { total, ok, fail, alreadyDone, failedIds }
+const migrateBase64ToStorage = async (onProgress) => {
+  const res = await dataList(LIBCARD_PREFIX);
+  const rows = res.rows || [];
+  // base64 방식(=imagePath 없고 image가 data URL)만 대상
+  const targets = [];
+  let alreadyDone = 0;
+  for (const r of rows) {
+    let c;
+    try { c = JSON.parse(r.value); } catch { continue; }
+    if (!c) continue;
+    if (c.imagePath) { alreadyDone++; continue; } // 이미 경로 방식
+    if (typeof c.image === 'string' && c.image.startsWith('data:')) targets.push(c);
+  }
+
+  const total = targets.length;
+  let ok = 0, fail = 0;
+  const failedIds = [];
+  const report = () => { if (onProgress) onProgress({ done: ok + fail, total, ok, fail }); };
+  report();
+
+  for (const c of targets) {
+    try {
+      // 1) 표시용 이미지 업로드
+      const imagePath = await storageUpload(c.id, c.image, '');
+      if (!imagePath) { fail++; failedIds.push(c.id); report(); continue; }
+      // 원본(있으면) 업로드 — 실패해도 치명적 아님
+      let originalPath = null;
+      if (typeof c.originalImage === 'string' && c.originalImage.startsWith('data:')) {
+        originalPath = await storageUpload(c.id, c.originalImage, 'orig');
+      }
+      // 2) 경로 방식으로 행 갱신 (base64 제거 — 이 순간 용량 회수)
+      const body = {
+        id: c.id,
+        imagePath,
+        originalPath,
+        label: c.label || '',
+        categoryId: c.categoryId || null,
+      };
+      const saved = await dataSet(LIBCARD_KEY(c.id), JSON.stringify(body));
+      if (!saved) { fail++; failedIds.push(c.id); report(); continue; }
+      ok++; report();
+    } catch (e) {
+      devWarn('마이그레이션 카드 실패:', c?.id, e);
+      fail++; failedIds.push(c.id); report();
+    }
+  }
+  return { total, ok, fail, alreadyDone, failedIds };
 };
 
 
@@ -1596,6 +1798,27 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
   const [resetPwUser, setResetPwUser] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  // base64 → Storage 마이그레이션 상태
+  const [migrating, setMigrating] = useState(false);
+  const [migProgress, setMigProgress] = useState(null); // { done, total, ok, fail }
+  const [migResult, setMigResult] = useState(null);      // { total, ok, fail, alreadyDone, failedIds }
+
+  const runMigration = async () => {
+    if (migrating) return;
+    if (!safeConfirm('내 계정의 기존 카드 이미지를 Storage로 옮깁니다.\n(안전 방식: 업로드 확인 후에만 기존 데이터 정리)\n\n시작할까요?')) return;
+    setMigrating(true);
+    setMigResult(null);
+    setMigProgress({ done: 0, total: 0, ok: 0, fail: 0 });
+    try {
+      const result = await migrateBase64ToStorage((p) => setMigProgress(p));
+      setMigResult(result);
+    } catch (e) {
+      setMigResult({ total: 0, ok: 0, fail: -1, alreadyDone: 0, failedIds: [] });
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   // 컴포넌트 마운트 시 admin_list_users RPC로 사용자 목록 가져오기
   useEffect(() => {
     let cancelled = false;
@@ -1692,6 +1915,49 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
           <button onClick={onClose} className="p-2 hover:bg-stone-100 rounded-lg transition">
             <X className="w-4 h-4 text-stone-600" />
           </button>
+        </div>
+
+        {/* base64 → Storage 마이그레이션 (관리자/본인 계정) */}
+        <div className="px-6 pt-4">
+          <div className="bg-sky-50 border border-sky-200 rounded-xl p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-sky-900">카드 이미지 Storage 이전</div>
+                <div className="text-[11px] text-sky-700 leading-snug mt-0.5">
+                  내 계정의 기존 카드를 안전하게 Storage로 옮깁니다(업로드 확인 후 정리).
+                </div>
+              </div>
+              <button
+                onClick={runMigration}
+                disabled={migrating}
+                className={`px-3 py-2 text-xs font-bold rounded-lg transition flex-shrink-0 ${migrating ? 'bg-stone-300 text-stone-500 cursor-not-allowed' : 'bg-sky-600 hover:bg-sky-700 text-white'}`}
+              >
+                {migrating ? '이전 중…' : '이전 시작'}
+              </button>
+            </div>
+            {migProgress && migProgress.total > 0 && (
+              <div className="mt-2">
+                <div className="h-2 bg-sky-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-sky-500 transition-all"
+                    style={{ width: `${Math.round((migProgress.done / migProgress.total) * 100)}%` }}
+                  />
+                </div>
+                <div className="text-[11px] text-sky-700 mt-1">
+                  {migProgress.done} / {migProgress.total} (성공 {migProgress.ok} · 실패 {migProgress.fail})
+                </div>
+              </div>
+            )}
+            {migResult && (
+              <div className={`mt-2 text-[11px] rounded px-2 py-1.5 ${migResult.fail > 0 ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'}`}>
+                {migResult.fail === -1
+                  ? '오류로 중단되었습니다. 다시 시도해주세요.'
+                  : migResult.total === 0
+                    ? `이전할 카드가 없습니다. (이미 이전됨 ${migResult.alreadyDone}장)`
+                    : `완료: 성공 ${migResult.ok}장 · 실패 ${migResult.fail}장${migResult.alreadyDone ? ` · 기존 이전됨 ${migResult.alreadyDone}장` : ''}. ${migResult.fail > 0 ? '실패분은 원본이 그대로 남아 있어 다시 눌러 재시도하면 됩니다.' : '새로고침하면 반영됩니다.'}`}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* 내용 */}
