@@ -897,6 +897,62 @@ const deleteLibraryCategoryCards = async (cards) => {
   await Promise.all((cards || []).map(c => deleteLibraryCard(c.id)));
 };
 
+// ───── 관리자: 특정 선생님의 보관함 카드 열람 ─────
+// admin_get_aac_data(선생님id)로 카드 행을 받아, 경로 방식 카드는 서명 URL을 채워 반환.
+// 반환: { cards: [{id,label,categoryId,image(서명URL),imagePath,_ownerId}], error }
+const adminLoadTeacherLibrary = async (teacherUserId) => {
+  try {
+    const rows = await adminGetAacData(teacherUserId);
+    const cards = [];
+    const needSign = [];
+    for (const r of (rows || [])) {
+      if (!r.key || !r.key.startsWith(LIBCARD_PREFIX)) continue;
+      let c = null;
+      try { c = JSON.parse(r.value); } catch { c = null; }
+      if (!c) continue;
+      if (c.imagePath || c.image) {
+        c._ownerId = teacherUserId;
+        cards.push(c);
+        if (c.imagePath) needSign.push(c);
+      }
+    }
+    // 경로 방식 카드: 서명 URL 발급(관리자는 Edge Function이 남의 폴더도 허용)
+    if (needSign.length) {
+      const paths = [];
+      for (const c of needSign) {
+        if (c.imagePath) paths.push(c.imagePath);
+        if (c.originalPath) paths.push(c.originalPath);
+      }
+      const urls = await resolveSignedUrls(paths);
+      for (const c of needSign) {
+        c.image = (c.imagePath && urls[c.imagePath]) || '';
+        c.originalImage = (c.originalPath && urls[c.originalPath]) || null;
+      }
+    }
+    return { cards, error: false };
+  } catch (e) {
+    devWarn('선생님 보관함 로드 실패:', e);
+    return { cards: [], error: true };
+  }
+};
+
+// 서명 URL(또는 data URL) 이미지를 data URL로 변환 (내 폴더로 복사하기 위함)
+const urlToDataUrl = async (url) => {
+  try {
+    if (!url) return null;
+    if (url.startsWith('data:')) return url; // 이미 data URL
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    return await new Promise((resolve) => {
+      const fr = new FileReader();
+      fr.onloadend = () => resolve(fr.result);
+      fr.onerror = () => resolve(null);
+      fr.readAsDataURL(blob);
+    });
+  } catch { return null; }
+};
+
 // 구버전(카테고리 통째 행)을 신규(카드 1장=1행)로 이전.
 // 구버전 행이 있으면: 각 카드를 신규 키로 저장 → 구버전 행 삭제. 이전한 게 있으면 true 반환.
 const migrateLegacyLibrary = async () => {
@@ -1856,7 +1912,7 @@ const LoginScreen = ({ onLogin }) => {
 // ─────────────────────────────────────────────────────────────
 // 사용자 관리 (관리자 전용)
 // ─────────────────────────────────────────────────────────────
-const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
+const UserManagement = ({ users, onUpdate, onClose, currentUser, onImportCard }) => {
   const [showAddForm, setShowAddForm] = useState(false);
   const [newUser, setNewUser] = useState({ email: '', name: '', password: '' });
   const [error, setError] = useState('');
@@ -1868,6 +1924,49 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
   const [migrating, setMigrating] = useState(false);
   const [migProgress, setMigProgress] = useState(null); // { done, total, ok, fail }
   const [migResult, setMigResult] = useState(null);      // { total, ok, fail, alreadyDone, failedIds }
+
+  // 선생님 보관함 열람 상태
+  const [viewTeacher, setViewTeacher] = useState(null);   // 열람 중인 선생님 { user_id, display_name, email }
+  const [teacherCards, setTeacherCards] = useState(null); // 로드된 카드 배열
+  const [teacherLoading, setTeacherLoading] = useState(false);
+  const [teacherError, setTeacherError] = useState(false);
+  const [importing, setImporting] = useState({});          // { [cardId]: 'doing'|'done' }
+
+  const openTeacherLibrary = async (u) => {
+    setViewTeacher(u);
+    setTeacherCards(null);
+    setTeacherError(false);
+    setTeacherLoading(true);
+    setImporting({});
+    try {
+      const { cards, error } = await adminLoadTeacherLibrary(u.user_id);
+      setTeacherCards(cards);
+      setTeacherError(error);
+    } catch {
+      setTeacherError(true);
+      setTeacherCards([]);
+    } finally {
+      setTeacherLoading(false);
+    }
+  };
+
+  const importOneCard = async (card) => {
+    if (!onImportCard || importing[card.id]) return;
+    setImporting(prev => ({ ...prev, [card.id]: 'doing' }));
+    try {
+      // 서명 URL 이미지를 data URL로 변환 → 내 폴더로 복사 저장
+      const dataUrl = await urlToDataUrl(card.image);
+      const origDataUrl = card.originalImage ? await urlToDataUrl(card.originalImage) : null;
+      if (!dataUrl) { setImporting(prev => ({ ...prev, [card.id]: undefined })); return; }
+      await onImportCard(
+        [{ image: dataUrl, originalImage: origDataUrl, label: card.label || '' }],
+        card.categoryId || null
+      );
+      setImporting(prev => ({ ...prev, [card.id]: 'done' }));
+    } catch (e) {
+      setImporting(prev => ({ ...prev, [card.id]: undefined }));
+    }
+  };
 
   const runMigration = async () => {
     if (migrating) return;
@@ -2127,6 +2226,15 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
                   </div>
 
                   <div className="flex items-center gap-1 flex-shrink-0">
+                    {!isMe && (
+                      <button
+                        onClick={() => openTeacherLibrary(u)}
+                        className="px-2.5 py-1.5 bg-white hover:bg-sky-50 border border-stone-200 hover:border-sky-200 text-stone-600 hover:text-sky-600 text-[11px] font-medium rounded transition"
+                        title="보관함 보기"
+                      >
+                        <Folder className="w-3 h-3" />
+                      </button>
+                    )}
                     <button
                       onClick={() => setResetPwUser(u)}
                       className="px-2.5 py-1.5 bg-white hover:bg-blue-50 border border-stone-200 hover:border-blue-200 text-stone-600 hover:text-blue-600 text-[11px] font-medium rounded transition"
@@ -2191,6 +2299,73 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser }) => {
           💡 새 계정 만들 때 알려드린 비밀번호는 안전한 방법으로 선생님께 전달해주세요
         </div>
       </div>
+
+      {/* 선생님 보관함 열람 모달 */}
+      {viewTeacher && (
+        <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onClick={() => setViewTeacher(null)}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-stone-200">
+              <div className="min-w-0">
+                <h3 className="text-base font-bold text-stone-900 truncate">
+                  {viewTeacher.display_name || viewTeacher.email}님의 보관함
+                </h3>
+                <p className="text-[11px] text-stone-500">카드를 눌러 내 보관함으로 가져올 수 있어요</p>
+              </div>
+              <button onClick={() => setViewTeacher(null)} className="p-2 hover:bg-stone-100 rounded-lg transition">
+                <X className="w-4 h-4 text-stone-600" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {teacherLoading && (
+                <div className="text-center text-sm text-stone-500 py-12">불러오는 중…</div>
+              )}
+              {!teacherLoading && teacherError && (
+                <div className="text-center text-sm text-red-500 py-12">
+                  보관함을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.
+                </div>
+              )}
+              {!teacherLoading && !teacherError && teacherCards && teacherCards.length === 0 && (
+                <div className="text-center text-sm text-stone-400 py-12">보관된 카드가 없습니다.</div>
+              )}
+              {!teacherLoading && !teacherError && teacherCards && teacherCards.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  {teacherCards.map((card) => {
+                    const state = importing[card.id];
+                    return (
+                      <div key={card.id} className="bg-stone-50 border border-stone-200 rounded-xl overflow-hidden flex flex-col">
+                        <div className="aspect-square bg-white flex items-center justify-center overflow-hidden">
+                          {card.image ? (
+                            <img src={card.image} alt={card.label || ''} className="w-full h-full object-contain" />
+                          ) : (
+                            <span className="text-[10px] text-stone-300">이미지 없음</span>
+                          )}
+                        </div>
+                        <div className="p-2 flex flex-col gap-1.5">
+                          <p className="text-[11px] font-medium text-stone-700 truncate text-center">{card.label || '\u00A0'}</p>
+                          <button
+                            onClick={() => importOneCard(card)}
+                            disabled={!!state}
+                            className={`w-full py-1.5 text-[11px] font-bold rounded-lg transition ${
+                              state === 'done'
+                                ? 'bg-emerald-100 text-emerald-700 cursor-default'
+                                : state === 'doing'
+                                  ? 'bg-stone-200 text-stone-400 cursor-wait'
+                                  : 'bg-sky-600 hover:bg-sky-700 text-white'
+                            }`}
+                          >
+                            {state === 'done' ? '가져옴 ✓' : state === 'doing' ? '가져오는 중…' : '가져오기'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -4672,6 +4847,7 @@ export default function App() {
           users={users}
           currentUser={currentUser}
           onUpdate={setUsers}
+          onImportCard={addCardsToLibrary}
           onClose={() => setShowUserManagement(false)}
         />
       )}
