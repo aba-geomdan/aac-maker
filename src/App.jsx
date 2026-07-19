@@ -798,6 +798,31 @@ const deleteLibraryCard = async (cardId) => {
 
 // 전체 라이브러리 로드 → { [categoryId or '__none__']: cards[] } 맵
 // 신규(카드 단위) + 구버전(카테고리 통째) 둘 다 읽어 합침 (호환).
+// aac_data에서 특정 prefix의 key만 가볍게 조회 (value 제외 → 타임아웃 회피)
+async function dataListKeys(prefix, userIdOverride) {
+  try {
+    const headers = await authHeaders();
+    let uid = userIdOverride;
+    if (!uid) { const u = await getCurrentAuthUser(); uid = u?.id; }
+    if (!uid) return { keys: [], _error: true };
+    const filter = prefix ? `&key=like.${encodeURIComponent(prefix)}*` : '';
+    const keys = [];
+    const PAGE = 500; // key만이라 가벼움
+    let offset = 0;
+    for (let guard = 0; guard < 200; guard++) {
+      const url = `${SUPABASE_URL}/rest/v1/aac_data?user_id=eq.${uid}&select=key${filter}&order=key.asc&limit=${PAGE}&offset=${offset}`;
+      const r = await fetch(url, { headers });
+      if (!r.ok) { if (offset === 0) return { keys: [], _error: true }; break; }
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      for (const row of rows) keys.push(row.key);
+      if (rows.length < PAGE) break;
+      offset += PAGE;
+    }
+    return { keys };
+  } catch (e) { return { keys: [], _error: true }; }
+}
+
 const loadLibraryAll = async () => {
   const map = {}; // { catKey: cards[] }
   let hadError = false;
@@ -806,27 +831,29 @@ const loadLibraryAll = async () => {
     map[catKey].push(card);
   };
   const needSign = []; // 서명 필요한 카드 목록 (신규 경로 방식)
+
+  // 신규: 카드 단위 행 — ★ key만 가볍게 조회 후, 본문은 한 장씩 개별로 읽어 타임아웃 회피
   try {
-    // 신규: 카드 단위 행
-    const cardRes = await dataList(LIBCARD_PREFIX);
-    if (cardRes._error) hadError = true;
-    for (const r of (cardRes.rows || [])) {
+    const keyRes = await dataListKeys(LIBCARD_PREFIX);
+    if (keyRes._error) hadError = true;
+    for (const key of (keyRes.keys || [])) {
+      let c = null;
       try {
-        const c = JSON.parse(r.value);
-        if (!c) continue;
-        if (c.imagePath) {
-          // 신규(경로) 방식: 나중에 서명 URL을 image/originalImage에 채움
-          push(c.categoryId || LIBRARY_NONE, c);
-          needSign.push(c);
-        } else if (c.image) {
-          // 구버전(base64) 방식: 그대로 사용
-          push(c.categoryId || LIBRARY_NONE, c);
-        }
-      } catch {}
+        const row = await dataGet(key); // 한 장만 읽음 → 안전
+        if (row?.value) c = JSON.parse(row.value);
+      } catch { c = null; }
+      if (!c) continue;
+      if (c.imagePath) {
+        push(c.categoryId || LIBRARY_NONE, c);
+        needSign.push(c); // 나중에 서명 URL 채움
+      } else if (c.image) {
+        push(c.categoryId || LIBRARY_NONE, c); // 구버전(base64) 그대로
+      }
     }
   } catch (e) { devWarn('라이브러리(카드) 로드 실패:', e); hadError = true; }
+
+  // 구버전: 카테고리 통째 행 (있으면 흡수) — 소수라 통째 읽어도 무방
   try {
-    // 구버전: 카테고리 통째 행 (있으면 흡수)
     const oldRes = await dataList(LIBRARY_PREFIX);
     for (const r of (oldRes.rows || [])) {
       const catKey = r.key.slice(LIBRARY_PREFIX.length);
@@ -897,29 +924,57 @@ const migrateLegacyLibrary = async () => {
 //   2) aac_data 행을 경로 방식으로 갱신 (저장 성공 확인)
 //   3) 위 둘이 성공한 카드에 한해서만 완료 처리 (base64는 행에서 이미 빠짐)
 // 실패한 카드는 원본(base64) 행을 그대로 두어 유실 방지.
+//
+// ★ 중요: base64가 크면 여러 행을 한꺼번에 읽는 순간 statement timeout(500)이 난다.
+//   그래서 여기서는 (a) key 목록만 가볍게 조회하고, (b) 본문은 한 장씩 개별로 읽어 처리.
+//   → 무거운 value를 한 번에 긁지 않으므로 타임아웃 회피.
+//
 // onProgress({ done, total, ok, fail }) 콜백으로 진행률 통지.
 // 반환: { total, ok, fail, alreadyDone, failedIds }
 const migrateBase64ToStorage = async (onProgress) => {
-  const res = await dataList(LIBCARD_PREFIX);
-  const rows = res.rows || [];
-  // base64 방식(=imagePath 없고 image가 data URL)만 대상
-  const targets = [];
-  let alreadyDone = 0;
-  for (const r of rows) {
-    let c;
-    try { c = JSON.parse(r.value); } catch { continue; }
-    if (!c) continue;
-    if (c.imagePath) { alreadyDone++; continue; } // 이미 경로 방식
-    if (typeof c.image === 'string' && c.image.startsWith('data:')) targets.push(c);
+  // (a) key 목록만 가볍게 조회 (value 제외 → 타임아웃 안 남)
+  const uid = (await getCurrentAuthUser())?.id;
+  if (!uid) return { total: 0, ok: 0, fail: -1, alreadyDone: 0, failedIds: [] };
+  const headers = await authHeaders();
+
+  const keys = [];
+  const PAGE = 500; // key만이라 가벼움 → 넉넉히
+  let offset = 0;
+  for (let guard = 0; guard < 200; guard++) {
+    const url = `${SUPABASE_URL}/rest/v1/aac_data?user_id=eq.${uid}` +
+      `&select=key&key=like.${encodeURIComponent(LIBCARD_PREFIX)}*` +
+      `&order=key.asc&limit=${PAGE}&offset=${offset}`;
+    const r = await fetch(url, { headers });
+    if (!r.ok) {
+      if (offset === 0) return { total: 0, ok: 0, fail: -1, alreadyDone: 0, failedIds: [] };
+      break;
+    }
+    const rows = await r.json();
+    if (!Array.isArray(rows) || rows.length === 0) break;
+    for (const row of rows) keys.push(row.key);
+    if (rows.length < PAGE) break;
+    offset += PAGE;
   }
 
-  const total = targets.length;
-  let ok = 0, fail = 0;
+  // (b) 한 장씩 본문을 읽어 처리
+  const total = keys.length; // 상한(이미 이전된 것 포함) — 실제 대상은 처리하며 셈
+  let ok = 0, fail = 0, alreadyDone = 0, processed = 0;
   const failedIds = [];
-  const report = () => { if (onProgress) onProgress({ done: ok + fail, total, ok, fail }); };
+  const report = () => { if (onProgress) onProgress({ done: processed, total, ok, fail }); };
   report();
 
-  for (const c of targets) {
+  for (const key of keys) {
+    processed++;
+    let c = null;
+    try {
+      const row = await dataGet(key); // 한 장만 읽음 → 안전
+      if (row?.value) c = JSON.parse(row.value);
+    } catch { c = null; }
+
+    if (!c) { report(); continue; }
+    if (c.imagePath) { alreadyDone++; report(); continue; } // 이미 경로 방식
+    if (!(typeof c.image === 'string' && c.image.startsWith('data:'))) { report(); continue; }
+
     try {
       // 1) 표시용 이미지 업로드
       const imagePath = await storageUpload(c.id, c.image, '');
