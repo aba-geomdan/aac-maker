@@ -3520,26 +3520,48 @@ export default function App() {
       for (let attempt = 0; attempt < 8; attempt++) {
         if (cancelled) return;
         try {
-          const res = await dataList(LIBCARD_PREFIX);
+          // key만 가볍게 조회(타임아웃 회피) 후, 카드 본문은 한 장씩 개별로 읽음
+          const keyRes = await dataListKeys(LIBCARD_PREFIX);
           if (cancelled) return;
-          const rows = res.rows || [];
-          if (rows.length > 0) {
+          const keys = keyRes.keys || [];
+          if (keys.length > 0) {
             const map = {};
-            for (const r of rows) {
+            const needSign = []; // imagePath 방식 카드 (서명 URL 채울 대상)
+            for (const key of keys) {
+              if (cancelled) return;
+              let c = null;
               try {
-                const c = JSON.parse(r.value);
-                if (c && c.image) {
-                  const k = c.categoryId || '__none__';
-                  if (!map[k]) map[k] = [];
-                  map[k].push(c);
-                }
-              } catch {}
+                const row = await dataGet(key);
+                if (row?.value) c = JSON.parse(row.value);
+              } catch { c = null; }
+              if (!c) continue;
+              // 신규(경로) 또는 구버전(base64) 둘 다 수용
+              if (c.imagePath || c.image) {
+                const k = c.categoryId || '__none__';
+                if (!map[k]) map[k] = [];
+                map[k].push(c);
+                if (c.imagePath) needSign.push(c);
+              }
+            }
+            // 경로 방식 카드: 서명 URL 일괄 발급 후 image/originalImage 채움
+            if (needSign.length) {
+              const paths = [];
+              for (const c of needSign) {
+                if (c.imagePath) paths.push(c.imagePath);
+                if (c.originalPath) paths.push(c.originalPath);
+              }
+              const urls = await resolveSignedUrls(paths);
+              if (cancelled) return;
+              for (const c of needSign) {
+                c.image = (c.imagePath && urls[c.imagePath]) || '';
+                c.originalImage = (c.originalPath && urls[c.originalPath]) || null;
+              }
             }
             setLibrary(map);
             break; // 성공
           }
           // 0개 + 에러 아님 = 진짜 카드 없음 (몇 번 확인 후 종료)
-          if (!res._error && attempt >= 2) {
+          if (!keyRes._error && attempt >= 2) {
             setLibrary({});
             break;
           }
