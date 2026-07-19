@@ -3515,25 +3515,20 @@ export default function App() {
     let cancelled = false;
     libraryLoadedRef.current = false;
     (async () => {
-      // 진단(수동)에서 잘 되는 방식 그대로: LIBCARD만 직접 조회해서 map 구성.
+      // 마이그레이션 완료로 base64가 빠져 행이 가벼우므로, key,value를 배치로 읽음(빠름).
       // 토큰 준비 전 첫 시도가 실패할 수 있으므로 카드를 받을 때까지 재시도.
       for (let attempt = 0; attempt < 8; attempt++) {
         if (cancelled) return;
         try {
-          // key만 가볍게 조회(타임아웃 회피) 후, 카드 본문은 한 장씩 개별로 읽음
-          const keyRes = await dataListKeys(LIBCARD_PREFIX);
+          const listRes = await dataList(LIBCARD_PREFIX); // key,value 배치 조회
           if (cancelled) return;
-          const keys = keyRes.keys || [];
-          if (keys.length > 0) {
+          const rows = listRes.rows || [];
+          if (rows.length > 0) {
             const map = {};
             const needSign = []; // imagePath 방식 카드 (서명 URL 채울 대상)
-            for (const key of keys) {
-              if (cancelled) return;
+            for (const r of rows) {
               let c = null;
-              try {
-                const row = await dataGet(key);
-                if (row?.value) c = JSON.parse(row.value);
-              } catch { c = null; }
+              try { c = JSON.parse(r.value); } catch { c = null; }
               if (!c) continue;
               // 신규(경로) 또는 구버전(base64) 둘 다 수용
               if (c.imagePath || c.image) {
@@ -3561,7 +3556,7 @@ export default function App() {
             break; // 성공
           }
           // 0개 + 에러 아님 = 진짜 카드 없음 (몇 번 확인 후 종료)
-          if (!keyRes._error && attempt >= 2) {
+          if (!listRes._error && attempt >= 2) {
             setLibrary({});
             break;
           }
