@@ -1960,7 +1960,7 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser, onImportCard })
       if (!dataUrl) { setImporting(prev => ({ ...prev, [card.id]: undefined })); return; }
       await onImportCard(
         [{ image: dataUrl, originalImage: origDataUrl, label: card.label || '' }],
-        card.categoryId || null
+        null // 가져온 카드는 미분류로 넣음 (관리자가 원하는 카테고리로 직접 이동)
       );
       setImporting(prev => ({ ...prev, [card.id]: 'done' }));
     } catch (e) {
