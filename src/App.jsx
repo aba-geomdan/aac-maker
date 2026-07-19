@@ -4243,30 +4243,37 @@ export default function App() {
     const NONE = '__none__';
     const destKey = targetCategoryId || NONE;
 
-    // 현재 화면 map에서 대상 카드들을 뽑아 categoryId만 교체
+    // 1) 현재 library에서 대상 카드들을 먼저 뽑아 categoryId 교체 (setState 콜백에 의존하지 않음)
     const moving = [];
+    for (const arr of Object.values(library)) {
+      for (const c of (arr || [])) {
+        if (idSet.has(c.id)) moving.push({ ...c, categoryId: targetCategoryId || null });
+      }
+    }
+    if (moving.length === 0) return;
+
+    // 2) DB 재저장 (imagePath가 그대로라 재업로드 없이 categoryId만 갱신). 성공분만 화면 반영.
+    const results = await Promise.all(
+      moving.map(async (c) => ({ id: c.id, ok: await saveLibraryCard(c).catch(() => false) }))
+    );
+    const okIds = new Set(results.filter(r => r.ok).map(r => r.id));
+    const okMoving = moving.filter(c => okIds.has(c.id));
+
+    // 3) 저장 성공한 카드만 화면 map에서 이동
     setLibrary(prev => {
       const next = {};
       for (const [k, arr] of Object.entries(prev)) {
-        next[k] = [];
-        for (const c of (arr || [])) {
-          if (idSet.has(c.id)) {
-            const updated = { ...c, categoryId: targetCategoryId || null };
-            moving.push(updated);
-          } else {
-            next[k].push(c);
-          }
-        }
+        next[k] = (arr || []).filter(c => !okIds.has(c.id));
       }
       if (!next[destKey]) next[destKey] = [];
-      next[destKey] = [...next[destKey], ...moving];
+      next[destKey] = [...next[destKey], ...okMoving];
       return next;
     });
-
-    // DB 재저장 (경로 방식 카드는 imagePath가 그대로 있어 재업로드 없이 categoryId만 갱신됨)
-    await Promise.all(moving.map(c => saveLibraryCard(c).catch(e => devWarn('카테고리 이동 저장 실패:', e))));
     setLibrarySelected(new Set());
-  }, [librarySelected]);
+    if (okMoving.length < moving.length) {
+      safeAlert(`${moving.length}장 중 ${okMoving.length}장만 이동됐습니다. 나머지는 다시 시도해주세요.`);
+    }
+  }, [librarySelected, library]);
 
   // useCallback으로 감싸서 함수 참조 안정화 (React.memo의 CardEditor가 불필요하게 리렌더링되는 것 방지)
   const updateCard = useCallback((id, updated) => {
@@ -4274,8 +4281,16 @@ export default function App() {
   }, []);
 
   const deleteCard = useCallback((id) => {
-    setCards(prev => prev.filter(c => c.id !== id));
-  }, []);
+    setCards(prev => {
+      const next = prev.filter(c => c.id !== id);
+      // 삭제로 0장이 되면 draft 자동저장이 스킵되므로(0장 저장 안 함),
+      // 여기서 명시적으로 draft를 비워 새로고침 시 되살아나지 않게 함.
+      if (next.length === 0 && draftKey) {
+        try { localStorage.removeItem(draftKey); } catch {}
+      }
+      return next;
+    });
+  }, [draftKey]);
 
   const duplicateCard = useCallback((id) => {
     setCards(prev => {
