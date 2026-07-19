@@ -793,6 +793,17 @@ const saveLibraryCards = async (cards) => {
 
 // 카드 한 장 삭제
 const deleteLibraryCard = async (cardId) => {
+  // DB 행을 지우기 전에 먼저 읽어 Storage 경로 확보 → 파일까지 삭제(고아 파일 방지)
+  try {
+    const row = await dataGet(LIBCARD_KEY(cardId));
+    if (row?.value) {
+      const c = JSON.parse(row.value);
+      const paths = [];
+      if (c?.imagePath) paths.push(c.imagePath);
+      if (c?.originalPath) paths.push(c.originalPath);
+      if (paths.length) await storageRemove(paths).catch(() => {});
+    }
+  } catch (e) { devWarn('Storage 파일 삭제 확인 실패(무시):', e); }
   return dataDelete(LIBCARD_KEY(cardId)).catch(() => null);
 };
 
