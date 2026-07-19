@@ -2530,7 +2530,7 @@ const CategoryManager = ({ categories, onUpdate, onClose }) => {
 // ─────────────────────────────────────────────────────────────
 const LibraryView = ({
   library, categories, libraryCatId, setLibraryCatId,
-  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, onDiagnose, diagResult, cardSearch, setCardSearch,
+  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, onMoveSelected, onDiagnose, diagResult, cardSearch, setCardSearch,
 }) => {
   // 탭 목록: 카테고리들 + 미분류
   const NONE = '__none__';
@@ -2734,6 +2734,20 @@ const LibraryView = ({
           <div className="flex-1 text-sm font-bold text-stone-800 text-center tabular-nums">
             {selectedCount}장 선택됨
           </div>
+          {onMoveSelected && categories && categories.length > 0 && (
+            <select
+              value=""
+              onChange={(e) => { const v = e.target.value; if (v !== '') { onMoveSelected(v === '__none__' ? null : v); } e.target.value = ''; }}
+              className="px-3 py-2.5 bg-white border border-stone-200 text-stone-700 text-sm font-medium rounded-lg outline-none focus:border-amber-400 cursor-pointer"
+              title="선택 카드를 카테고리로 이동"
+            >
+              <option value="" disabled>카테고리로 이동…</option>
+              <option value="__none__">미분류</option>
+              {categories.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          )}
           <button
             onClick={onDeleteSelected}
             className="px-4 py-2.5 bg-white border border-red-200 text-red-600 hover:bg-red-50 text-sm font-bold rounded-lg transition flex items-center gap-1.5"
@@ -4218,6 +4232,39 @@ export default function App() {
       }
       return next;
     });
+    setLibrarySelected(new Set());
+  }, [librarySelected]);
+
+  // 선택한 카드들을 다른 카테고리로 이동 (categoryId 변경 후 재저장)
+  const moveSelectedLibraryCards = useCallback(async (targetCategoryId) => {
+    const ids = Array.from(librarySelected);
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const NONE = '__none__';
+    const destKey = targetCategoryId || NONE;
+
+    // 현재 화면 map에서 대상 카드들을 뽑아 categoryId만 교체
+    const moving = [];
+    setLibrary(prev => {
+      const next = {};
+      for (const [k, arr] of Object.entries(prev)) {
+        next[k] = [];
+        for (const c of (arr || [])) {
+          if (idSet.has(c.id)) {
+            const updated = { ...c, categoryId: targetCategoryId || null };
+            moving.push(updated);
+          } else {
+            next[k].push(c);
+          }
+        }
+      }
+      if (!next[destKey]) next[destKey] = [];
+      next[destKey] = [...next[destKey], ...moving];
+      return next;
+    });
+
+    // DB 재저장 (경로 방식 카드는 imagePath가 그대로 있어 재업로드 없이 categoryId만 갱신됨)
+    await Promise.all(moving.map(c => saveLibraryCard(c).catch(e => devWarn('카테고리 이동 저장 실패:', e))));
     setLibrarySelected(new Set());
   }, [librarySelected]);
 
@@ -5904,6 +5951,7 @@ export default function App() {
               diagResult={diagResult}
               onDeleteCard={deleteLibraryCardById}
               onDeleteSelected={deleteSelectedLibraryCards}
+              onMoveSelected={moveSelectedLibraryCards}
               cardSearch={librarySearch}
               setCardSearch={setLibrarySearch}
             />
