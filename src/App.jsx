@@ -4590,6 +4590,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const videoRef = useRef(null);
   const pageVideoInput = useRef(null);
   const [videoBusy, setVideoBusy] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false); // 판 관리 메뉴
   // 영상 소리 끄기 (이 기기에서 기억)
   const [videoMuted, setVideoMuted] = useState(() => { try { return localStorage.getItem('aac_video_muted') === '1'; } catch { return false; } });
   const toggleVideoMuted = () => setVideoMuted(m => {
@@ -4890,14 +4891,14 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const renderSetPicker = (large) => {
     if (!cellSets || mode !== 'use') return null;
     return (
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className={`font-bold text-stone-600 ${large ? 'text-base' : 'text-sm'}`}>답 칸 그림</span>
-        {cellSets.map((s, i) => (
-          <button key={i} onClick={() => chooseSet(i)}
-            className={`rounded-full border-2 font-bold ${large ? 'px-4 py-1.5 text-base' : 'px-3 py-1 text-sm'}`}
-            style={i === setIdx ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}
-            aria-pressed={i === setIdx}>{s.name || `그림 ${i + 1}`}</button>
-        ))}
+      <div className="flex items-center justify-end">
+        <label className={`flex items-center gap-1.5 text-stone-500 ${large ? 'text-base' : 'text-sm'}`}>
+          <ImageIcon className="w-4 h-4" /> 답 칸 그림
+          <select value={setIdx} onChange={(e) => chooseSet(parseInt(e.target.value, 10))} aria-label="답 칸 그림"
+            className="border border-stone-300 rounded-lg px-2 py-1 bg-white text-stone-700">
+            {cellSets.map((s, i) => <option key={i} value={i}>{s.name || `그림 ${i + 1}`}</option>)}
+          </select>
+        </label>
       </div>
     );
   };
@@ -4974,7 +4975,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <button onClick={() => setStoryPage(Math.min(pages.length - 1, pIdx + 1))} disabled={pIdx >= pages.length - 1}
             className="h-12 rounded-xl border border-stone-200 bg-white flex items-center justify-center disabled:opacity-30" aria-label="다음 쪽"><ChevronDown className="w-5 h-5 -rotate-90" /></button>
         </div>
-        <div className="flex items-center justify-center gap-2 flex-wrap">
+        {(qGroups || mode !== 'use') && <div className="flex items-center justify-center gap-2 flex-wrap">
           {qs.map((q, k) => {
             const on = qGroups && qOn.includes(k);
             return (
@@ -4984,9 +4985,12 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
                 aria-pressed={qGroups ? on : undefined}><Volume2 className="w-4 h-4" /> {q}</button>
             );
           })}
-          <span className="text-xs text-stone-400 ml-1">{pIdx + 1} / {pages.length}쪽</span>
+        </div>}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-stone-400">{pIdx + 1} / {pages.length}쪽</span>
+          <div className="flex-1" />
+          {renderSetPicker(large)}
         </div>
-        {renderSetPicker(large)}
         {mode === 'edit' && (
           <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 space-y-2 text-sm">
             <label className="flex items-center gap-2">이 쪽 문장
@@ -5046,7 +5050,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   };
 
   const renderSentenceBar = (large) => {
-    if (!sentenceOn || mode !== 'use') return null;
+    if (!sentenceOn || mode !== 'use' || !sentence.length) return null;
     const text = sentence.map(w => w.label).join(' ');
     return (
       <div className="flex items-stretch gap-2 mb-3">
@@ -5134,7 +5138,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
             </optgroup>
           ))}
         </select>
-        <button onClick={addBoard} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Plus className="w-4 h-4" /> 새 판</button>
         <select value={kidId} onChange={(e) => onKidChange(e.target.value)}
           className="border border-stone-300 rounded-lg px-2 py-1.5 text-sm bg-white max-w-[10rem]">
           <option value="all">모든 아이</option>
@@ -5143,11 +5146,29 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         </select>
         {kidId !== 'all' && <button onClick={removeKid} className="text-xs text-stone-500 underline">아이 빼기</button>}
         <div className="flex-1" />
-        {isAdmin && (
-          <button onClick={() => setShowBuiltinUpload(true)} className="px-2.5 py-1.5 rounded-lg border text-sm flex items-center gap-1"
-            style={{ borderColor: BOARD_PINK, color: '#993556', borderWidth: 1.5 }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>
+        {board && mode === 'use' && (
+          <button onClick={() => { setMode('use'); setBig(true); }} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Maximize2 className="w-4 h-4" /> 크게 보기</button>
         )}
-        <button onClick={() => setShowImport(true)} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Upload className="w-4 h-4" /> 칩판 넣기</button>
+        <div className="relative">
+          <button onClick={() => setMenuOpen(o => !o)} aria-expanded={menuOpen}
+            className={`px-2.5 py-1.5 rounded-lg border text-sm flex items-center gap-1 ${menuOpen ? 'bg-stone-100 border-stone-400' : 'border-stone-300'}`}>
+            <Settings2 className="w-4 h-4" /> 판 관리 <ChevronDown className={`w-3.5 h-3.5 transition ${menuOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 mt-1 z-30 w-48 rounded-xl border border-stone-200 bg-white shadow-lg p-1 text-sm" onClick={() => setMenuOpen(false)}>
+              {board && <button onClick={() => {
+                if (board.builtin) { if (safeConfirm('기본 판은 그대로 두고, 내 판으로 복사해서 고쳐요.\n복사할까요?')) copyBuiltin(); return; }
+                setMode('edit');
+              }} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Pencil className="w-4 h-4" /> 판 고치기</button>}
+              {board && <button onClick={() => setMode('hide')} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><EyeOff className="w-4 h-4" /> 칸 숨기기</button>}
+              {board && <button onClick={doPrint} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Printer className="w-4 h-4" /> 인쇄</button>}
+              <div className="my-1 border-t border-stone-100" />
+              <button onClick={addBoard} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Plus className="w-4 h-4" /> 새 판</button>
+              <button onClick={() => setShowImport(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Upload className="w-4 h-4" /> 칩판 넣기</button>
+              {isAdmin && <button onClick={() => setShowBuiltinUpload(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2" style={{ color: '#993556' }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>}
+            </div>
+          )}
+        </div>
       </div>
 
       {!board ? (
@@ -5157,8 +5178,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         </div>
       ) : (
         <>
-          {/* 모드 줄 */}
-          <div className="flex flex-wrap items-center gap-2">
+          {/* 모드 줄 — 판 고치기·칸 숨기기 때만 */}
+          {mode !== 'use' && <div className="flex flex-wrap items-center gap-2">
             <div className="flex bg-stone-100 rounded-lg p-0.5">
               {[['use', '수업', Volume2], ['edit', '판 고치기', Pencil], ['hide', '칸 숨기기', EyeOff]].map(([m, t, Icon]) => (
                 <button key={m} onClick={() => {
@@ -5174,9 +5195,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               ))}
             </div>
             <div className="flex-1" />
-            <button onClick={() => { setMode('use'); setBig(true); }} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Maximize2 className="w-4 h-4" /> 크게 보기</button>
-            <button onClick={doPrint} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Printer className="w-4 h-4" /> 인쇄</button>
-          </div>
+            <button onClick={() => setMode('use')} className="px-3 py-1.5 rounded-lg text-white text-sm font-bold flex items-center gap-1" style={{ background: BOARD_PINK }}><Check className="w-4 h-4" /> 다 했어요 (수업으로)</button>
+          </div>}
 
           {mode === 'edit' && (
             <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 flex flex-wrap items-center gap-3 text-sm">
@@ -5237,13 +5257,13 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
             </div>
           )}
 
-          <p className="text-xs text-stone-500">
+          {mode !== 'use' && <p className="text-xs text-stone-500">
             {mode === 'use' && (sentenceOn
               ? `낱말을 누르면 읽고 문장 줄에 쌓여요. 문장 줄을 누르면 문장 전체를 읽어요. 지금 ${kidName}에게 보이는 칸만 나와요.`
               : `그림을 누르면 소리로 읽어요. 지금 ${kidName}에게 보이는 칸만 나와요.`)}
             {mode === 'edit' && (isStory ? '위쪽 그림을 누르면 그림을 바꾸고, 아래 칸을 누르면 답 그림과 말을 바꿔요.' : '칸을 누르면 그림과 읽어 줄 말을 바꿔요.')}
             {mode === 'hide' && `칸을 누르면 ${kidName}에게 숨기거나 다시 보여요. 숨긴 칸은 자리만 남고 눌러도 소리가 나지 않아요.`}
-          </p>
+          </p>}
 
           {renderStory(false)}
           {renderGrid(false)}
