@@ -6,7 +6,7 @@
  * 무단 복제·배포·재판매·온라인 게시를 엄격히 금지합니다.
  */
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu, Volume2, Printer, Maximize2 } from 'lucide-react';
+import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu, Volume2, VolumeX, Printer, Maximize2 } from 'lucide-react';
 
 /* ================================================================
    도메인 잠금 (지적재산 보호)
@@ -4590,6 +4590,14 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const videoRef = useRef(null);
   const pageVideoInput = useRef(null);
   const [videoBusy, setVideoBusy] = useState(false);
+  // 영상 소리 끄기 (이 기기에서 기억)
+  const [videoMuted, setVideoMuted] = useState(() => { try { return localStorage.getItem('aac_video_muted') === '1'; } catch { return false; } });
+  const toggleVideoMuted = () => setVideoMuted(m => {
+    const n = !m;
+    try { localStorage.setItem('aac_video_muted', n ? '1' : '0'); } catch {}
+    try { if (videoRef.current) videoRef.current.muted = n; } catch {}
+    return n;
+  });
   const [qOn, setQOn] = useState([]); // 누른 질문 번호들 → 그 질문의 답 칸만 보임
   useEffect(() => { setStoryPage(0); setSentence([]); setQOn([]); }, [activeId]);
   useEffect(() => { setSentence([]); setQOn([]); }, [storyPage]);
@@ -4936,13 +4944,18 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
             <div className="rounded-2xl border-2 border-stone-200 bg-white p-2 flex flex-col items-center justify-center gap-2">
               <div className="relative w-full">
                 {vurl
-                  ? <video key={vkey} ref={videoRef} src={vurl} autoPlay playsInline preload="auto"
+                  ? <video key={vkey} ref={videoRef} src={vurl} autoPlay playsInline preload="auto" muted={videoMuted}
                       onClick={replay} className={`w-full rounded-xl bg-stone-900 object-contain ${large ? 'max-h-[52vh]' : 'max-h-80'}`} />
                   : <div className="w-full aspect-video rounded-xl bg-stone-100 flex items-center justify-center text-sm text-stone-400">영상을 불러오는 중…</div>}
                 {vurl && (
-                  <button onClick={replay} className="absolute right-2 bottom-2 rounded-full bg-white/90 border border-stone-200 px-3 py-1.5 text-sm font-bold text-stone-700 flex items-center gap-1">
-                    <RotateCw className="w-4 h-4" /> 다시 보기
-                  </button>
+                  <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
+                    <button onClick={toggleVideoMuted} aria-pressed={videoMuted} className="rounded-full bg-white/90 border border-stone-200 px-3 py-1.5 text-sm font-bold text-stone-700 flex items-center gap-1">
+                      {videoMuted ? <><Volume2 className="w-4 h-4" /> 소리 켜기</> : <><VolumeX className="w-4 h-4" /> 소리 끄기</>}
+                    </button>
+                    <button onClick={replay} className="rounded-full bg-white/90 border border-stone-200 px-3 py-1.5 text-sm font-bold text-stone-700 flex items-center gap-1">
+                      <RotateCw className="w-4 h-4" /> 다시 보기
+                    </button>
+                  </div>
                 )}
               </div>
               {page.text && (
