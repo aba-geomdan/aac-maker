@@ -3749,11 +3749,74 @@ const boardSpeak = (text, rate) => {
     const u = new window.SpeechSynthesisUtterance(text);
     u.lang = 'ko-KR';
     u.rate = rate || 0.9;
-    const v = (ss.getVoices() || []).find(x => /^ko/i.test(x.lang || ''));
+    // 목소리·높낮이: 이 기기에서 고른 것 (판 관리 → 목소리)
+    let want = '', pitch = 1;
+    try { want = localStorage.getItem('aac_board_voice') || ''; const pv = parseFloat(localStorage.getItem('aac_board_pitch')); if (pv >= 0.5 && pv <= 2) pitch = pv; } catch {}
+    u.pitch = pitch;
+    const kos = (ss.getVoices() || []).filter(x => /^ko/i.test(x.lang || ''));
+    const v = (want && kos.find(x => x.name === want)) || kos[0];
     if (v) u.voice = v;
     ss.speak(u);
     return true;
   } catch (e) { return false; }
+};
+
+// ----- 목소리 고르기 창 -----
+const VoiceModal = ({ rate, setRate, onClose }) => {
+  const [voices, setVoices] = useState([]);
+  const [voice, setVoice] = useState(() => { try { return localStorage.getItem('aac_board_voice') || ''; } catch { return ''; } });
+  const [pitch, setPitch] = useState(() => { try { const v = parseFloat(localStorage.getItem('aac_board_pitch')); return v >= 0.5 && v <= 2 ? v : 1; } catch { return 1; } });
+  useEffect(() => {
+    const ss = window.speechSynthesis;
+    if (!ss) return;
+    const load = () => setVoices((ss.getVoices() || []).filter(x => /^ko/i.test(x.lang || '')));
+    load();
+    try { ss.addEventListener('voiceschanged', load); } catch {}
+    return () => { try { ss.removeEventListener('voiceschanged', load); } catch {} };
+  }, []);
+  useEffect(() => { try { localStorage.setItem('aac_board_voice', voice); } catch {} }, [voice]);
+  useEffect(() => { try { localStorage.setItem('aac_board_pitch', String(pitch)); } catch {} }, [pitch]);
+  const sample = () => { if (!boardSpeak('안녕하세요. 오늘 기분이 어때요?', rate)) safeAlert('이 브라우저에서는 소리로 읽기를 쓸 수 없어요.'); };
+  const cur = voice && voices.some(v => v.name === voice) ? voice : (voices[0]?.name || '');
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200">
+          <h3 className="font-bold text-stone-900 flex items-center gap-1.5"><Volume2 className="w-5 h-5" /> 목소리</h3>
+          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-stone-100" aria-label="닫기"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4 text-sm">
+          <div className="space-y-1.5">
+            <div className="font-bold text-stone-700">목소리 고르기</div>
+            {voices.length ? (
+              <div className="space-y-1.5 max-h-56 overflow-auto">
+                {voices.map(v => (
+                  <label key={v.name} className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer ${cur === v.name ? 'bg-pink-50' : 'border-stone-200'}`}
+                    style={cur === v.name ? { borderColor: BOARD_PINK } : undefined}>
+                    <input type="radio" name="aacvoice" checked={cur === v.name} onChange={() => { setVoice(v.name); setTimeout(sample, 50); }} />
+                    <span className="flex-1">{v.name.replace(/^Microsoft\s*/i, '').replace(/\s*-\s*Korean.*$/i, '').replace(/Online \(Natural\)/i, '(자연스러운 목소리)')}</span>
+                    {!v.localService && <span className="text-[11px] text-stone-400">인터넷 필요</span>}
+                  </label>
+                ))}
+              </div>
+            ) : <p className="text-stone-500">이 기기에는 고를 수 있는 한국어 목소리가 하나뿐이에요.</p>}
+          </div>
+          <label className="block space-y-1">
+            <div className="flex justify-between"><span className="font-bold text-stone-700">높낮이</span><span className="text-stone-500">{pitch < 0.95 ? '낮게' : pitch > 1.05 ? '높게' : '보통'}</span></div>
+            <input type="range" min="0.6" max="1.6" step="0.1" value={pitch} onChange={(e) => setPitch(parseFloat(e.target.value))} className="w-full" />
+          </label>
+          <label className="block space-y-1">
+            <div className="flex justify-between"><span className="font-bold text-stone-700">빠르기</span><span className="text-stone-500">{rate < 0.85 ? '천천히' : rate > 1.05 ? '빠르게' : '보통'}</span></div>
+            <input type="range" min="0.5" max="1.3" step="0.1" value={rate} onChange={(e) => setRate(parseFloat(e.target.value))} className="w-full" />
+          </label>
+          <div className="flex justify-between items-center pt-1">
+            <span className="text-xs text-stone-400">고른 목소리는 이 기기에서 기억해요.</span>
+            <button onClick={sample} className="px-4 py-2 rounded-lg text-white font-bold flex items-center gap-1.5" style={{ background: BOARD_PINK }}><Volume2 className="w-4 h-4" /> 들어 보기</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 };
 
 // ----- 칩판 자르기 (순수 함수) -----
@@ -4591,6 +4654,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const pageVideoInput = useRef(null);
   const [videoBusy, setVideoBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false); // 판 관리 메뉴
+  const [showVoice, setShowVoice] = useState(false); // 목소리 고르기 창
   // 영상 소리 끄기 (이 기기에서 기억)
   const [videoMuted, setVideoMuted] = useState(() => { try { return localStorage.getItem('aac_video_muted') === '1'; } catch { return false; } });
   const toggleVideoMuted = () => setVideoMuted(m => {
@@ -5162,6 +5226,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               }} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Pencil className="w-4 h-4" /> 판 고치기</button>}
               {board && <button onClick={() => setMode('hide')} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><EyeOff className="w-4 h-4" /> 칸 숨기기</button>}
               {board && <button onClick={doPrint} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Printer className="w-4 h-4" /> 인쇄</button>}
+              <button onClick={() => setShowVoice(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Volume2 className="w-4 h-4" /> 목소리</button>
               <div className="my-1 border-t border-stone-100" />
               <button onClick={addBoard} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Plus className="w-4 h-4" /> 새 판</button>
               <button onClick={() => setShowImport(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Upload className="w-4 h-4" /> 칩판 넣기</button>
@@ -5304,6 +5369,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         />
       )}
 
+      {showVoice && <VoiceModal rate={rate} setRate={setRate} onClose={() => setShowVoice(false)} />}
       {showBuiltinUpload && (
         <BuiltinUploadModal count={builtins.filter(b => !b.unlisted).length} onClose={() => setShowBuiltinUpload(false)}
           onDone={() => { setShowBuiltinUpload(false); reloadBuiltins(); }} />
