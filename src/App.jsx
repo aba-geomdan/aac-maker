@@ -3675,7 +3675,8 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
       setBusy(`${i + 1}/${list.length}개 올리는 중`);
       const b = list[i];
       const ok = await sharedSet(SHARED_BOARD_KEY(b.id), JSON.stringify({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, cells: b.cells,
-        ...(b.kind === 'story' ? { kind: 'story', pages: b.pages || [], sentence: b.sentence !== false } : (typeof b.sentence === 'boolean' ? { sentence: b.sentence } : {})) }));
+        ...(b.kind === 'story' ? { kind: 'story', pages: b.pages || [], sentence: b.sentence !== false } : (typeof b.sentence === 'boolean' ? { sentence: b.sentence } : {})),
+        ...(Array.isArray(b.cellSets) && b.cellSets.length ? { cellSets: b.cellSets, cellSetDefault: b.cellSetDefault || 0 } : {}) }));
       if (!ok) fail++;
     }
     if (fail === list.length) {
@@ -4569,6 +4570,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       cells = o ? (o.cells || []) : null;
       if (o && o.kind === 'story') extra = { kind: 'story', pages: o.pages || [], sentence: o.sentence !== false };
       else if (o && typeof o.sentence === 'boolean') extra = { sentence: o.sentence };
+      if (o && Array.isArray(o.cellSets) && o.cellSets.length) extra = { ...extra, cellSets: o.cellSets, cellSetDefault: o.cellSetDefault || 0 };
     } catch { cells = null; }
     if (!cells) { builtinLoading.current[id] = false; if (r.error) safeAlert('기본 판을 불러오지 못했어요. 잠시 뒤 다시 골라 주세요.'); return; }
     setBuiltins(prev => prev.map(b => b.id === id ? { ...b, cells, ...extra } : b));
@@ -4654,6 +4656,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (board.builtin && !board.cells) need.add(board.id);
     if (!board.builtin) (board.cells || []).forEach(c => { if (c.ref && !c.cardId) need.add(String(c.ref).split('#')[0]); });
     if (!board.builtin) (board.pages || []).forEach(pg => { if (pg.pageRef && !pg.cardId) need.add(String(pg.pageRef).split('#')[0]); });
+    (board.cellSets || []).forEach(s => { if (s && s.ref) need.add(s.ref); });
     need.forEach(id => { const b = builtins.find(x => x.id === id); if (b && !b.cells) ensureBuiltin(id); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, board?.cells, builtins.length]);
@@ -4689,6 +4692,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       b.pages = (board.pages || []).map((pg, i) => ({ cardId: null, text: pg.text || '', questions: [...(pg.questions || [])], pageRef: `${board.id}#${i}`, ...(pg.sharedVideo ? { sharedVideo: pg.sharedVideo } : {}) }));
     }
     else if (typeof board.sentence === 'boolean') b.sentence = board.sentence;
+    if (Array.isArray(board.cellSets) && board.cellSets.length) { b.cellSets = JSON.parse(JSON.stringify(board.cellSets)); b.cellSetDefault = board.cellSetDefault || 0; }
     b.hidden = JSON.parse(JSON.stringify(board.hidden || {}));
     setBoards(prev => [...prev, b]);
     setActiveId(b.id);
@@ -4782,7 +4786,9 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       });
       return;
     }
-    const v = cellView(board.cells[i], i);
+    const src = (mode === 'use' && useCells) ? useCells : board.cells;
+    if (!src[i]) return;
+    const v = cellView(src[i], i);
     if (!v.label) return;
     if (sentenceOn) setSentence(prev => [...prev, { label: v.label, image: v.image }]);
     const ok = boardSpeak(v.label, rate);
@@ -4845,6 +4851,47 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const isStory = board?.kind === 'story';
   // 칸마다 질문 번호(q)가 있는 판: 질문을 누르면 그 질문의 답 칸만 보임 (아무것도 안 누르면 모두 보임)
   const qGroups = isStory && !!board?.cells?.some(c => c && Number.isInteger(c.q));
+  // 답 칸 그림 바꾸기 (cellSets): 같은 낱말을 다른 사람 그림·글자로 보여 줌 — 수업 화면에서만
+  const [setChoice, setSetChoice] = useState({});
+  const cellSets = Array.isArray(board?.cellSets) && board.cellSets.length ? board.cellSets : null;
+  const setIdx = cellSets ? Math.min(cellSets.length - 1, Math.max(0, setChoice[board.id] ?? (() => {
+    try { const v = localStorage.getItem('aac_cellset:' + board.id); if (v !== null && v !== '') return parseInt(v, 10); } catch {}
+    return board.cellSetDefault || 0;
+  })())) : -1;
+  const chooseSet = (i) => {
+    if (!board) return;
+    setSetChoice(prev => ({ ...prev, [board.id]: i }));
+    try { localStorage.setItem('aac_cellset:' + board.id, String(i)); } catch {}
+  };
+  const useCells = useMemo(() => {
+    if (!board || !board.cells) return board?.cells || null;
+    if (mode !== 'use' || !cellSets) return board.cells;
+    const s = cellSets[setIdx];
+    if (!s) return board.cells;
+    if (s.text) return board.cells.map(c => ({ label: c.label || (c.cardId ? cardMap[c.cardId]?.label : '') || '' }));
+    if (s.ref) {
+      const rb = builtinMap[s.ref];
+      if (!rb || !rb.cells) return board.cells;
+      return rb.cells.map((c, i) => ({ label: c.label || '', ref: `${s.ref}#${i}` }));
+    }
+    if (Array.isArray(s.cells)) return s.cells;
+    return board.cells;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [board, mode, cellSets, setIdx, builtinMap, cardMap]);
+  const renderSetPicker = (large) => {
+    if (!cellSets || mode !== 'use') return null;
+    return (
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`font-bold text-stone-600 ${large ? 'text-base' : 'text-sm'}`}>답 칸 그림</span>
+        {cellSets.map((s, i) => (
+          <button key={i} onClick={() => chooseSet(i)}
+            className={`rounded-full border-2 font-bold ${large ? 'px-4 py-1.5 text-base' : 'px-3 py-1 text-sm'}`}
+            style={i === setIdx ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}
+            aria-pressed={i === setIdx}>{s.name || `그림 ${i + 1}`}</button>
+        ))}
+      </div>
+    );
+  };
   const sentenceOn = !!board && (board.sentence ?? isStory);
   const pages = isStory ? (board.pages || []) : [];
   const pIdx = Math.min(storyPage, Math.max(0, pages.length - 1));
@@ -4924,6 +4971,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           })}
           <span className="text-xs text-stone-400 ml-1">{pIdx + 1} / {pages.length}쪽</span>
         </div>
+        {renderSetPicker(large)}
         {mode === 'edit' && (
           <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 space-y-2 text-sm">
             <label className="flex items-center gap-2">이 쪽 문장
@@ -5014,8 +5062,9 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (!board.cells) return <div className="py-16 text-center text-stone-500 text-sm">판을 불러오는 중…</div>;
     return (<>
       {renderSentenceBar(large)}
+      {!isStory && cellSets && mode === 'use' && <div className="mb-3">{renderSetPicker(large)}</div>}
       <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${board.cols || 4}, minmax(0, 1fr))` }}>
-        {board.cells.map((cell, i) => {
+        {(useCells || board.cells).map((cell, i) => {
           if (mode === 'use' && qGroups && qOn.length && Number.isInteger(cell.q) && !qOn.includes(cell.q)) return null;
           const v = cellView(cell, i);
           const empty = !v.image && !v.label;
