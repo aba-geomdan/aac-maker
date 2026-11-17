@@ -6,7 +6,7 @@
  * 무단 복제·배포·재판매·온라인 게시를 엄격히 금지합니다.
  */
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu } from 'lucide-react';
+import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu, Volume2, Printer, Maximize2 } from 'lucide-react';
 
 /* ================================================================
    도메인 잠금 (지적재산 보호)
@@ -3540,6 +3540,1615 @@ const TutorialOverlay = ({ onClose }) => {
 // ─────────────────────────────────────────────────────────────
 // 메인 컴포넌트
 // ─────────────────────────────────────────────────────────────
+// =====================================================================
+// 말하는 판 (누르면 소리로 말하는 AAC 놀이판)
+//  - 판 저장: aac_data 'aac_board:{id}' (본인 계정, RLS)
+//  - 아이 목록: aac_data 'aac_board_kids'
+//  - 그림: 기존 카테고리(보관함) 카드 사용. 칩판 넣기로 잘라 새 카테고리에 저장
+// =====================================================================
+const BOARD_PREFIX = 'aac_board:';
+const BOARD_KIDS_KEY = 'aac_board_kids';
+// 기본 판: Supabase aac_shared 표 (로그인한 선생님은 보기만, 올리기·지우기는 관리자만 — RLS)
+//   'board_index' = [{ id, name, group, cols, count }],  'board:{id}' = { id, name, group, cols, cells:[{label,image}] }
+// 아이별 칸 숨기기는 계정마다 aac_data 'aac_board_hidden:{id}'
+const BUILTIN_HIDDEN_PREFIX = 'aac_board_hidden:';
+const SHARED_INDEX_KEY = 'board_index';
+const SHARED_BOARD_KEY = (id) => `board:${id}`;
+async function sharedGet(key) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/aac_shared?key=eq.${encodeURIComponent(key)}&select=value`, { headers });
+    if (!r.ok) return { error: true };
+    const rows = await r.json();
+    return { value: rows?.[0]?.value ?? null };
+  } catch (e) { return { error: true }; }
+}
+async function sharedSet(key, value) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/aac_shared?on_conflict=key`, {
+      method: 'POST',
+      headers: { ...headers, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ key, value, updated_at: new Date().toISOString() }),
+    });
+    return r.ok;
+  } catch (e) { return false; }
+}
+async function sharedDeleteLike(prefix) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/aac_shared?key=like.${encodeURIComponent(prefix)}*`, { method: 'DELETE', headers });
+    return r.ok;
+  } catch (e) { return false; }
+}
+async function sharedDelete(key) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/aac_shared?key=eq.${encodeURIComponent(key)}`, { method: 'DELETE', headers });
+    return r.ok;
+  } catch (e) { return false; }
+}
+
+// ----- 기본 판 올리기 창 (관리자 전용) -----
+const BuiltinUploadModal = ({ count, onDone, onClose }) => {
+  const [busy, setBusy] = useState('');
+  const fileRef = useRef(null);
+  const onFile = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    let data = null;
+    try { data = JSON.parse(await f.text()); } catch { data = null; }
+    const list = (data?.boards || []).filter(b => b && b.id && b.name && Array.isArray(b.cells));
+    if (!list.length) { safeAlert('기본 판 파일이 아니에요. 받아 둔 aac-builtin-boards.json 파일을 골라 주세요.'); return; }
+    setBusy('올리는 중…');
+    let fail = 0;
+    for (let i = 0; i < list.length; i++) {
+      setBusy(`${i + 1}/${list.length}개 올리는 중`);
+      const b = list[i];
+      const ok = await sharedSet(SHARED_BOARD_KEY(b.id), JSON.stringify({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, cells: b.cells,
+        ...(b.kind === 'story' ? { kind: 'story', pages: b.pages || [], sentence: b.sentence !== false } : (typeof b.sentence === 'boolean' ? { sentence: b.sentence } : {})) }));
+      if (!ok) fail++;
+    }
+    if (fail === list.length) {
+      setBusy('');
+      safeAlert('올리지 못했어요.\nSupabase에 aac_shared 표를 만드는 SQL을 먼저 실행했는지, 관리자 계정으로 로그인했는지 확인해 주세요.');
+      return;
+    }
+    const index = list.map(b => ({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, count: b.cells.length, ...(b.kind === 'story' ? { kind: 'story' } : {}) }));
+    // 새 파일에 없는 예전 판은 지움
+    const ids = new Set(list.map(b => b.id));
+    const prev = await sharedGet(SHARED_INDEX_KEY);
+    try { for (const o of (JSON.parse(prev.value || '[]') || [])) if (o && o.id && !ids.has(o.id)) await sharedDelete(SHARED_BOARD_KEY(o.id)); } catch {}
+    const okIdx = await sharedSet(SHARED_INDEX_KEY, JSON.stringify(index));
+    setBusy('');
+    if (!okIdx) { safeAlert('판 목록을 저장하지 못했어요. 다시 시도해 주세요.'); return; }
+    safeAlert(`기본 판 ${list.length - fail}개를 올렸어요.` + (fail ? `\n${fail}개는 올라가지 않았어요. 다시 올려 주세요.` : ''));
+    onDone();
+  };
+  const removeAll = async () => {
+    if (!safeConfirm('기본 판을 모두 내릴까요?\n모든 선생님 화면에서 기본 판이 사라져요. (내 판으로 복사한 판의 그림도 안 보이게 돼요)')) return;
+    setBusy('내리는 중…');
+    const a = await sharedDeleteLike('board:');
+    const b = await sharedDelete(SHARED_INDEX_KEY);
+    setBusy('');
+    if (!a || !b) { safeAlert('내리지 못했어요. 다시 시도해 주세요.'); return; }
+    safeAlert('기본 판을 모두 내렸어요.');
+    onDone();
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={() => !busy && onClose()}>
+      <div className="bg-white rounded-2xl w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200">
+          <h3 className="font-bold text-stone-900">기본 판 올리기</h3>
+          {!busy && <button onClick={onClose} className="p-1.5 rounded-md hover:bg-stone-100" aria-label="닫기"><X className="w-5 h-5" /></button>}
+        </div>
+        {busy ? (
+          <div className="p-10 text-center text-stone-600">
+            <div className="w-8 h-8 border-4 border-stone-200 border-t-stone-600 rounded-full animate-spin mx-auto mb-3" />{busy}
+          </div>
+        ) : (
+          <div className="p-5 space-y-3">
+            <p className="text-sm text-stone-600 leading-relaxed">받아 둔 기본 판 파일(aac-builtin-boards.json)을 고르면 잠긴 저장 공간에 올라가요. 로그인한 선생님만 볼 수 있고, 다시 올리면 기본 판이 새 파일 내용으로 바뀌어요.</p>
+            <p className="text-sm text-stone-800">지금 올라가 있는 기본 판: <b>{count}개</b></p>
+            <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={onFile} />
+            <div className="flex justify-between gap-2 pt-1">
+              <button onClick={removeAll} disabled={!count} className="px-3 py-2 rounded-lg border border-stone-300 text-sm text-red-600 disabled:opacity-40">기본 판 모두 내리기</button>
+              <button onClick={() => fileRef.current?.click()} className="px-4 py-2 rounded-lg text-white text-sm font-bold flex items-center gap-1.5" style={{ background: BOARD_PINK }}>
+                <Upload className="w-4 h-4" /> 파일 고르기
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+const BOARD_PINK = '#D4728A';
+
+// ----- 소리로 말하기 -----
+const boardSpeak = (text, rate) => {
+  try {
+    const ss = window.speechSynthesis;
+    if (!ss || typeof window.SpeechSynthesisUtterance === 'undefined') return false;
+    ss.cancel();
+    const u = new window.SpeechSynthesisUtterance(text);
+    u.lang = 'ko-KR';
+    u.rate = rate || 0.9;
+    const v = (ss.getVoices() || []).find(x => /^ko/i.test(x.lang || ''));
+    if (v) u.voice = v;
+    ss.speak(u);
+    return true;
+  } catch (e) { return false; }
+};
+
+// ----- 칩판 자르기 (순수 함수) -----
+// ===== 칩판 자르기 (순수 함수 — 화면 없이 테스트 가능) =====
+// img: { width, height, data(RGBA) }  →  [{ x, y, w, h }] 잘라낼 그림 영역 (원본 좌표)
+const chipLum = (d, i) => (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
+// 배경과 구분되는 '잉크' 판정: 어둡거나, 색이 진한 픽셀
+const chipInk = (d, i) => {
+  const r = d[i], g = d[i + 1], b = d[i + 2], a = d[i + 3];
+  if (a < 40) return false;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  return chipLum(d, i) < 225 || (mx - mn) > 40;
+};
+const chipGroup = (idx, gap) => {
+  const out = [];
+  for (const v of idx) {
+    if (out.length && v - out[out.length - 1][1] <= gap) out[out.length - 1][1] = v;
+    else out.push([v, v]);
+  }
+  return out;
+};
+// 진한 선(표 선·점선) 찾기
+const chipFindLines = (img, x0, y0, x1, y1, horizontal, thr) => {
+  const { width: W, height: H, data: d } = img;
+  const dk = (x, y) => (x < 0 || y < 0 || x >= W || y >= H) ? false : chipLum(d, (y * W + x) * 4) < 175;
+  const idx = [];
+  if (horizontal) {
+    const t = Math.max(4, Math.round(H * 0.004)), span = x1 - x0;
+    const tol = Math.max(3, Math.round(W * 0.015));
+    for (let y = y0; y < y1; y++) {
+      let c = 0, run = 0, best = 0, miss = 0;
+      for (let x = x0; x < x1; x++) {
+        if (dk(x, y) && !dk(x, y - t) && !dk(x, y + t)) { c++; run += 1 + miss; miss = 0; if (run > best) best = run; }
+        else if (run > 0 && ++miss > tol) { run = 0; miss = 0; }
+      }
+      // 길게 이어진 선만 (그림 속 짧은 가로 윤곽선은 제외)
+      if (c > span * thr && best > W * 0.15) idx.push(y);
+    }
+  } else {
+    const t = Math.max(4, Math.round(W * 0.004)), span = y1 - y0;
+    for (let x = x0; x < x1; x++) {
+      let c = 0;
+      for (let y = y0; y < y1; y++) if (dk(x, y) && !dk(x - t, y) && !dk(x + t, y)) c++;
+      if (c > span * thr) idx.push(x);
+    }
+  }
+  return chipGroup(idx, 3).map(([a, b]) => Math.round((a + b) / 2));
+};
+// 잉크가 있는 줄/칸의 구간들 (빈 틈으로 나뉨)
+const chipBands = (img, x0, y0, x1, y1, horizontal, minGap) => {
+  const { width: W, data: d } = img;
+  const idx = [];
+  if (horizontal) {
+    const need = Math.max(1, (x1 - x0) * 0.004);
+    for (let y = y0; y < y1; y++) {
+      let c = 0;
+      for (let x = x0; x < x1; x++) if (chipInk(d, (y * W + x) * 4)) { c++; if (c >= need) break; }
+      if (c >= need) idx.push(y);
+    }
+  } else {
+    const need = Math.max(1, (y1 - y0) * 0.004);
+    for (let x = x0; x < x1; x++) {
+      let c = 0;
+      for (let y = y0; y < y1; y++) if (chipInk(d, (y * W + x) * 4)) { c++; if (c >= need) break; }
+      if (c >= need) idx.push(x);
+    }
+  }
+  return chipGroup(idx, minGap);
+};
+const chipMedian = (arr) => { const s = [...arr].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : 0; };
+// 한 칸 안에서 그림 부분만 (아래 글자 띠는 선택적으로 뺌)
+const chipTrimCell = (img, cell, stripLabel) => {
+  const m = cell.framed === false ? 0 : 0.035;
+  const mx = Math.round(cell.w * m), my = Math.round(cell.h * m);
+  const x0 = cell.x + mx, y0 = cell.y + my, x1 = cell.x + cell.w - mx, y1 = cell.y + cell.h - my;
+  if (x1 - x0 < 8 || y1 - y0 < 8) return null;
+  let rows = chipBands(img, x0, y0, x1, y1, true, Math.max(2, Math.round((y1 - y0) * 0.02)));
+  if (!rows.length) return null;
+  if (stripLabel && rows.length >= 2) {
+    const last = rows[rows.length - 1], H = y1 - y0;
+    if (last[0] - y0 > H * 0.55 && (last[1] - last[0]) < H * 0.35) rows = rows.slice(0, -1);
+  }
+  const ty0 = rows[0][0], ty1 = rows[rows.length - 1][1] + 1;
+  const cols = chipBands(img, x0, ty0, x1, ty1, false, 2);
+  if (!cols.length) return null;
+  const tx0 = cols[0][0], tx1 = cols[cols.length - 1][1] + 1;
+  if (tx1 - tx0 < 6 || ty1 - ty0 < 6) return null;
+  return { x: tx0, y: ty0, w: tx1 - tx0, h: ty1 - ty0, cell };
+};
+// 칸 가장자리에 테두리(실선·점선)가 있는지
+const chipHasFrame = (img, c) => {
+  const { width: W, data: d } = img;
+  const band = Math.max(2, Math.round(c.h * 0.03));
+  let hit = 0;
+  for (let x = c.x; x < c.x + c.w; x++) {
+    for (let y = c.y; y < c.y + band; y++) if (chipInk(d, (y * W + x) * 4)) { hit++; break; }
+  }
+  return hit > c.w * 0.3;
+};
+// 칩판 한 장 → 칩 영역 목록
+const splitChipSheet = (img, stripLabel = true) => {
+  const W = img.width, H = img.height;
+  // 1) 표 선(실선·점선)으로 나누기 — 칸끼리 선을 같이 쓰는 표
+  let byLines = [];
+  const hl = chipFindLines(img, 0, 0, W, H, true, 0.15);
+  if (hl.length >= 2) {
+    let cells = [];
+    // 줄마다 세로선을 따로 찾음 → 줄마다 칩 위치가 달라도(가운데 정렬 등) 맞게 나눔
+    for (let i = 0; i < hl.length - 1; i++) {
+      const y0 = hl[i], y1 = hl[i + 1];
+      if (y1 - y0 < H * 0.04) continue;
+      const bh = y1 - y0, e = Math.max(3, Math.round(bh * 0.03));
+      const darkNear = (x, ya, yb) => {
+        for (let y = ya; y < yb; y++) for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx; if (xx < 0 || xx >= W) continue;
+          if (chipLum(img.data, (y * W + xx) * 4) < 175) return true;
+        }
+        return false;
+      };
+      // 칸 테두리는 위아래 끝까지 닿음 — 그림 속 세로 윤곽선은 걸러냄
+      const vl = chipFindLines(img, 0, y0, W, y1, false, 0.5)
+        .filter(x => darkNear(x, y0 + 1, y0 + e) && darkNear(x, y1 - e, y1 - 1));
+      for (let j = 0; j < vl.length - 1; j++) cells.push({ x: vl[j], y: y0, w: vl[j + 1] - vl[j], h: y1 - y0 });
+    }
+    const mw = chipMedian(cells.map(c => c.w)), mh = chipMedian(cells.map(c => c.h));
+    cells = cells.filter(c => c.w > mw * 0.6 && c.h > mh * 0.6 && c.w < mw * 1.6);
+    byLines = cells.map(c => chipTrimCell(img, c, stripLabel)).filter(Boolean);
+  }
+  // 2) 빈 틈으로 나누기 — 칩마다 떨어져 있는 판(점선 상자 등)
+  let byGaps = [];
+  {
+    let cells = [];
+    const rb = chipBands(img, 0, 0, W, H, true, Math.max(3, Math.round(H * 0.006)));
+    for (const [ry0, ry1] of rb) {
+      const cb = chipBands(img, 0, ry0, W, ry1 + 1, false, Math.max(3, Math.round(W * 0.006)));
+      for (const [cx0, cx1] of cb) cells.push({ x: cx0, y: ry0, w: cx1 - cx0 + 1, h: ry1 - ry0 + 1 });
+    }
+    const big = cells.filter(c => c.w > W * 0.05 && c.h > H * 0.05);
+    const mw = chipMedian(big.map(c => c.w)), mh = chipMedian(big.map(c => c.h));
+    cells = big.filter(c => c.w > mw * 0.5 && c.h > mh * 0.5 && c.w < mw * 1.8 && c.h < mh * 1.8);
+    cells = cells.map(c => {
+      const framed = chipHasFrame(img, c);
+      if (framed) return { ...c, framed: true };
+      const x = Math.max(0, c.x - 4), y = Math.max(0, c.y - 4);
+      return { x, y, w: Math.min(W - x, c.w + 8), h: Math.min(H - y, c.h + 8), framed: false };
+    });
+    byGaps = cells.map(c => chipTrimCell(img, c, stripLabel)).filter(Boolean);
+  }
+  let out = byGaps.length > byLines.length ? byGaps : byLines;
+  if (!out.length) {
+    const one = chipTrimCell(img, { x: 0, y: 0, w: W, h: H, framed: false }, false);
+    out = one ? [one] : [];
+  }
+  return out;
+};
+
+// ----- 파일 → 캔버스 -----
+let _pdfjsPromise = null;
+const loadPdfJs = () => {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (_pdfjsPromise) return _pdfjsPromise;
+  _pdfjsPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = () => {
+      try {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        resolve(window.pdfjsLib);
+      } catch (e) { reject(e); }
+    };
+    s.onerror = () => { _pdfjsPromise = null; reject(new Error('PDF 도구를 불러오지 못했어요')); };
+    document.head.appendChild(s);
+  });
+  return _pdfjsPromise;
+};
+
+const imageFileToCanvas = (file, maxSide = 2400) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    const sc = Math.min(1, maxSide / Math.max(im.naturalWidth, im.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(im.naturalWidth * sc));
+    c.height = Math.max(1, Math.round(im.naturalHeight * sc));
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(im, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    resolve(c);
+  };
+  im.onerror = () => { URL.revokeObjectURL(url); reject(new Error('그림을 열 수 없어요')); };
+  im.src = url;
+});
+
+// "45-51,53" → [45..51,53]. 비우면 null(전체)
+const parsePageRange = (txt, max) => {
+  const t = (txt || '').trim();
+  if (!t) return null;
+  const out = new Set();
+  for (const part of t.split(/[,\s]+/)) {
+    if (!part) continue;
+    const m = part.match(/^(\d+)(?:\s*[-~]\s*(\d+))?$/);
+    if (!m) continue;
+    let a = parseInt(m[1], 10), b = m[2] ? parseInt(m[2], 10) : a;
+    if (a > b) [a, b] = [b, a];
+    for (let i = a; i <= b; i++) if (i >= 1 && i <= max) out.add(i);
+  }
+  return out.size ? [...out].sort((x, y) => x - y) : null;
+};
+
+const canvasCropSquare = (src, b, size = 400) => {
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, size, size);
+  const s = Math.max(b.w, b.h) * 1.08;
+  const k = size / s;
+  const dw = b.w * k, dh = b.h * k;
+  ctx.drawImage(src, b.x, b.y, b.w, b.h, (size - dw) / 2, (size - dh) / 2, dw, dh);
+  return c.toDataURL('image/jpeg', 0.9);
+};
+
+// '01 자동차 놀이__1_타.png' → 칩 이름 '타', 묶음 이름 '자동차 놀이' (앞 번호는 순서용)
+const nameFromFile = (fname) => {
+  let s = (fname || '').replace(/\.[^.]+$/, '');
+  const k = s.lastIndexOf('__');
+  if (k >= 0) s = s.slice(k + 2);
+  return s.replace(/^\d+[_\-.\s]*/, '').replace(/_/g, ' ').replace(/？/g, '?').trim();
+};
+const groupFromFile = (fname) => {
+  const s = (fname || '').replace(/\.[^.]+$/, '');
+  const k = s.lastIndexOf('__');
+  return k > 0 ? s.slice(0, k).replace(/^\d+[_\-.\s]*/, '').replace(/_/g, ' ').trim() : '';
+};
+const fileNameCompare = (a, b) => (a.name || '').localeCompare(b.name || '', 'ko', { numeric: true });
+
+// 칩판 파일들 → [{ id, image, label, include }]
+const cutChipFiles = async (files, { stripLabel, pageText }, onStatus) => {
+  const list = Array.from(files || []);
+  const images = list.filter(f => /^image\//.test(f.type));
+  const pdfs = list.filter(f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+  const chips = [];
+  const push = (image, label, group) => chips.push({ id: newId(), image, label: label || '', group: group || '', include: true });
+
+  // 그림 여러 장 = 그림 한 장이 칩 하나 (파일 이름을 칩 이름으로)
+  if (images.length >= 2 && pdfs.length === 0) {
+    images.sort(fileNameCompare);
+    for (let i = 0; i < images.length; i++) {
+      onStatus(`그림 ${i + 1}/${images.length}장 정리하는 중`);
+      try {
+        const c = await imageFileToCanvas(images[i], 1200);
+        const img = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+        const b = chipTrimCell(img, { x: 0, y: 0, w: c.width, h: c.height, framed: false }, stripLabel)
+          || { x: 0, y: 0, w: c.width, h: c.height };
+        push(canvasCropSquare(c, b), nameFromFile(images[i].name), groupFromFile(images[i].name));
+      } catch (e) { devWarn('그림 정리 실패:', e); }
+    }
+    return chips;
+  }
+
+  // 칩판 한 장(그림) 또는 PDF = 칸별로 자르기
+  const cutCanvas = (c, texts) => {
+    const img = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+    const boxes = splitChipSheet(img, stripLabel);
+    for (const b of boxes) {
+      let label = '';
+      if (texts && texts.length && b.cell) {
+        const cl = b.cell;
+        label = texts
+          .filter(t => t.x >= cl.x && t.x <= cl.x + cl.w && t.y >= cl.y && t.y <= cl.y + cl.h)
+          .map(t => t.str).join(' ').replace(/\s+/g, ' ').trim();
+      }
+      push(canvasCropSquare(c, b), label);
+    }
+  };
+
+  for (const f of images) {
+    onStatus('칩판을 자르는 중');
+    try { cutCanvas(await imageFileToCanvas(f, 2400), null); } catch (e) { devWarn(e); }
+  }
+  for (const f of pdfs) {
+    onStatus('PDF를 여는 중');
+    const pdfjs = await loadPdfJs();
+    const buf = await f.arrayBuffer();
+    const pdf = await pdfjs.getDocument({ data: buf }).promise;
+    const pages = parsePageRange(pageText, pdf.numPages) || Array.from({ length: pdf.numPages }, (_, i) => i + 1);
+    for (let k = 0; k < pages.length; k++) {
+      onStatus(`${k + 1}/${pages.length}쪽 자르는 중`);
+      try {
+        const page = await pdf.getPage(pages[k]);
+        const base = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: Math.min(3, 2000 / base.width) });
+        const c = document.createElement('canvas');
+        c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        let texts = [];
+        try {
+          const tc = await page.getTextContent();
+          texts = (tc.items || []).filter(it => (it.str || '').trim()).map(it => {
+            const [x, y] = vp.convertToViewportPoint(it.transform[4], it.transform[5]);
+            return { x, y, str: it.str.trim() };
+          });
+        } catch (e) { texts = []; }
+        cutCanvas(c, texts);
+      } catch (e) { devWarn('쪽 자르기 실패:', e); }
+    }
+  }
+  return chips;
+};
+
+// ----- 칩판 넣기 창 -----
+const ChipImportModal = ({ categories, setCategories, setLibrary, onClose, onSaved }) => {
+  const [step, setStep] = useState('pick'); // pick | busy | review | saving
+  const [status, setStatus] = useState('');
+  const [stripLabel, setStripLabel] = useState(true);
+  const [pageText, setPageText] = useState('');
+  const [chips, setChips] = useState([]);
+  const [catName, setCatName] = useState('');
+  const fileRef = useRef(null);
+
+  const onFiles = async (e) => {
+    // 목록을 먼저 복사 (value를 비우면 원래 목록도 비워짐)
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    const first = files[0].name || '';
+    setStep('busy');
+    try {
+      const out = await cutChipFiles(files, { stripLabel, pageText }, setStatus);
+      if (!out.length) {
+        safeAlert('칩을 찾지 못했어요. 칩판을 평평하게 두고 위에서 다시 찍어 보세요.');
+        setStep('pick');
+        return;
+      }
+      setChips(out);
+      setCatName(files.length > 1 && !/\.pdf$/i.test(first) ? '새 칩 묶음' : nameFromFile(first) || '새 칩 묶음');
+      setStep('review');
+    } catch (err) {
+      safeAlert('자르지 못했어요: ' + (err?.message || '알 수 없는 오류'));
+      setStep('pick');
+    }
+  };
+
+  const picked = chips.filter(c => c.include);
+  // 파일 이름에 '놀이 이름__'이 있으면 놀이별로 나눔
+  const grouped = chips.some(c => c.group);
+  const groupNames = useMemo(() => {
+    const out = [];
+    chips.forEach(c => { const g = c.group || catName.trim() || '새 칩 묶음'; if (!out.includes(g)) out.push(g); });
+    return out;
+  }, [chips, catName]);
+  const pickedGroups = grouped ? groupNames.filter(g => picked.some(c => (c.group || catName.trim() || '새 칩 묶음') === g)) : [];
+
+  const save = async () => {
+    const name = catName.trim();
+    if (!grouped && !name) { safeAlert('카테고리 이름을 적어 주세요.'); return; }
+    if (!picked.length) { safeAlert('저장할 칩을 하나 이상 남겨 주세요.'); return; }
+    setStep('saving');
+    const names = grouped ? pickedGroups : [name];
+    const newCats = names.map((n, k) => ({
+      id: `cat_${Date.now()}_${k}_${Math.random().toString(36).slice(2, 6)}`,
+      name: n,
+      color: CATEGORY_COLORS[((categories || []).length + k) % CATEGORY_COLORS.length],
+    }));
+    setCategories(prev => [...(prev || []), ...newCats]);
+    const catOf = (c) => newCats[grouped ? names.indexOf(c.group || name || '새 칩 묶음') : 0];
+    const savedBy = {};
+    let fail = 0, okCount = 0;
+    for (let i = 0; i < picked.length; i++) {
+      setStatus(`${i + 1}/${picked.length}개 저장하는 중`);
+      const cat = catOf(picked[i]);
+      const card = { id: newId(), image: picked[i].image, originalImage: null, label: (picked[i].label || '').trim(), categoryId: cat.id };
+      const ok = await saveLibraryCard(card).catch(() => false);
+      if (ok) { (savedBy[cat.id] = savedBy[cat.id] || []).push(card); okCount++; } else fail++;
+    }
+    setLibrary(prev => {
+      const next = { ...prev };
+      Object.entries(savedBy).forEach(([cid, arr]) => { next[cid] = [...(next[cid] || []), ...arr]; });
+      return next;
+    });
+    safeAlert((grouped ? `카테고리 ${newCats.length}개에 ${okCount}개를 저장했어요.` : `'${name}' 카테고리에 ${okCount}개를 저장했어요.`)
+      + (fail ? `\n${fail}개는 저장되지 않았어요. 다시 시도해 주세요.` : ''));
+    onSaved && onSaved(newCats[0].id);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={() => step === 'pick' && onClose()}>
+      <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200">
+          <h3 className="font-bold text-stone-900">칩판 넣기</h3>
+          {(step === 'pick' || step === 'review') && (
+            <button onClick={onClose} className="p-1.5 rounded-md hover:bg-stone-100" aria-label="닫기"><X className="w-5 h-5" /></button>
+          )}
+        </div>
+
+        {step === 'pick' && (
+          <div className="p-5 space-y-4 overflow-auto">
+            <div className="text-sm text-stone-600 leading-relaxed space-y-1">
+              <p>· <b>칩판 한 장</b>(사진·PDF)을 넣으면 칸마다 잘라 줘요.</p>
+              <p>· <b>그림 여러 장</b>을 한꺼번에 고르면 그림 한 장이 칩 하나가 되고, 파일 이름이 칩 이름이 돼요. (예: 044_무릎.png → 무릎)</p>
+              <p>· 파일 이름이 '자동차 놀이__1_타.png'처럼 되어 있으면 '자동차 놀이' 카테고리로 나눠 저장해요.</p>
+              <p>· 사진을 찍을 때는 칩판을 평평하게 두고 위에서 똑바로 찍어 주세요.</p>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-stone-700">
+              <input type="checkbox" checked={stripLabel} onChange={(e) => setStripLabel(e.target.checked)} />
+              칩 아래 글자는 빼고 그림만 자르기
+            </label>
+            <div className="text-sm text-stone-700">
+              <p className="mb-1">PDF에서 자를 쪽 <span className="text-stone-400">(비우면 전체)</span></p>
+              <input value={pageText} onChange={(e) => setPageText(e.target.value)} placeholder="45-51, 53"
+                className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" multiple className="hidden" onChange={onFiles} />
+            <button onClick={() => fileRef.current?.click()}
+              className="w-full py-3 rounded-xl text-white font-bold flex items-center justify-center gap-2" style={{ background: BOARD_PINK }}>
+              <Upload className="w-5 h-5" /> 파일 고르기
+            </button>
+          </div>
+        )}
+
+        {(step === 'busy' || step === 'saving') && (
+          <div className="p-10 text-center text-stone-600">
+            <div className="w-8 h-8 border-4 border-stone-200 border-t-stone-600 rounded-full animate-spin mx-auto mb-3" />
+            {status || '잠깐만요…'}
+          </div>
+        )}
+
+        {step === 'review' && (
+          <>
+            <div className="px-5 pt-4 space-y-2">
+              {grouped ? (
+                <p className="text-sm text-stone-700">파일 이름 앞부분대로 <b>카테고리 {pickedGroups.length}개</b>로 나눠 저장해요.</p>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-stone-600 flex-shrink-0">카테고리 이름</span>
+                  <input value={catName} onChange={(e) => setCatName(e.target.value)}
+                    className="flex-1 border border-stone-300 rounded-lg px-3 py-1.5 text-sm" />
+                </div>
+              )}
+              <p className="text-xs text-stone-500">그림을 누르면 빼거나 다시 넣어요. 이름은 판에서 소리로 읽는 말이 돼요.</p>
+            </div>
+            <div className="p-5 overflow-auto grid grid-cols-3 sm:grid-cols-5 gap-3">
+              {chips.map((c, i) => (<React.Fragment key={c.id}>
+                {grouped && (i === 0 || chips[i - 1].group !== c.group) && (
+                  <p className="col-span-full text-sm font-bold text-stone-800 pt-2 border-t border-stone-100 first:border-0 first:pt-0">{c.group || '묶음 없음'}</p>
+                )}
+                <div className={`rounded-xl border p-1.5 ${c.include ? 'border-stone-300' : 'border-dashed border-stone-300 opacity-40'}`}>
+                  <button className="w-full aspect-square bg-white rounded-lg overflow-hidden relative"
+                    onClick={() => setChips(prev => prev.map((x, j) => j === i ? { ...x, include: !x.include } : x))}>
+                    <img src={c.image} alt="" className="w-full h-full object-contain" />
+                    {!c.include && <span className="absolute inset-0 flex items-center justify-center"><X className="w-8 h-8 text-stone-500" /></span>}
+                  </button>
+                  <input value={c.label} placeholder="이름"
+                    onChange={(e) => setChips(prev => prev.map((x, j) => j === i ? { ...x, label: e.target.value } : x))}
+                    className="mt-1 w-full border border-stone-200 rounded-md px-2 py-1 text-xs text-center" />
+                </div>
+              </React.Fragment>))}
+            </div>
+            <div className="px-5 py-3 border-t border-stone-200 flex items-center justify-between gap-2">
+              <button onClick={() => { setChips([]); setStep('pick'); }} className="px-3 py-2 rounded-lg border border-stone-300 text-sm">다시 고르기</button>
+              <button onClick={save} className="px-4 py-2 rounded-lg text-white text-sm font-bold" style={{ background: BOARD_PINK }}>
+                {grouped ? `카테고리 ${pickedGroups.length}개에 저장 (${picked.length}개)` : `카테고리에 저장 (${picked.length}개)`}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ----- 칸에 넣을 그림 고르기 창 -----
+const BoardCardPicker = ({ library, categories, cell, onPick, onClear, onLabel, onClose }) => {
+  const [catId, setCatId] = useState('__all__');
+  const [q, setQ] = useState('');
+  const [label, setLabel] = useState(cell?.label || '');
+  const [touched, setTouched] = useState(false);
+  const all = useMemo(() => {
+    const out = [];
+    Object.entries(library || {}).forEach(([k, arr]) => (arr || []).forEach(c => { if (c && c.image) out.push({ ...c, _cat: k }); }));
+    return out;
+  }, [library]);
+  const shown = all.filter(c =>
+    (catId === '__all__' || c._cat === catId) &&
+    (!q.trim() || (c.label || '').includes(q.trim())));
+  const hasNone = all.some(c => c._cat === '__none__');
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200">
+          <h3 className="font-bold text-stone-900">칸 고치기</h3>
+          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-stone-100" aria-label="닫기"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="px-5 pt-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-stone-600 flex-shrink-0">읽어 줄 말</span>
+            <input value={label} onChange={(e) => { setLabel(e.target.value); setTouched(true); }} placeholder="예: 밴드 붙여 주세요"
+              className="flex-1 border border-stone-300 rounded-lg px-3 py-1.5 text-sm" />
+            <button onClick={() => { onLabel(label.trim()); onClose(); }} className="px-3 py-1.5 rounded-lg border border-stone-300 text-sm">말만 바꾸기</button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => setCatId('__all__')}
+              className={`px-2.5 py-1 rounded-full text-xs border ${catId === '__all__' ? 'bg-stone-900 text-white border-stone-900' : 'border-stone-300 text-stone-600'}`}>전체</button>
+            {(categories || []).map(c => (
+              <button key={c.id} onClick={() => setCatId(c.id)}
+                className={`px-2.5 py-1 rounded-full text-xs border ${catId === c.id ? 'bg-stone-900 text-white border-stone-900' : 'border-stone-300 text-stone-600'}`}>{c.name}</button>
+            ))}
+            {hasNone && (
+              <button onClick={() => setCatId('__none__')}
+                className={`px-2.5 py-1 rounded-full text-xs border ${catId === '__none__' ? 'bg-stone-900 text-white border-stone-900' : 'border-stone-300 text-stone-600'}`}>미분류</button>
+            )}
+          </div>
+          <div className="relative">
+            <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="그림 이름으로 찾기"
+              className="w-full border border-stone-300 rounded-lg pl-9 pr-3 py-1.5 text-sm" />
+          </div>
+        </div>
+        <div className="p-5 overflow-auto grid grid-cols-4 sm:grid-cols-6 gap-2">
+          {shown.length === 0 && <p className="col-span-full text-center text-sm text-stone-400 py-8">그림이 없어요. 카테고리에 그림을 넣거나 '칩판 넣기'를 써 보세요.</p>}
+          {shown.map(c => (
+            <button key={c.id} onClick={() => { onPick(c, touched ? label.trim() : null); onClose(); }}
+              className="rounded-lg border border-stone-200 hover:border-stone-500 p-1 bg-white">
+              <img src={c.image} alt="" loading="lazy" className="w-full aspect-square object-contain" />
+              <p className="text-[11px] text-stone-700 truncate">{c.label || '이름 없음'}</p>
+            </button>
+          ))}
+        </div>
+        <div className="px-5 py-3 border-t border-stone-200 flex justify-between">
+          <button onClick={() => { onClear(); onClose(); }} className="px-3 py-2 rounded-lg border border-stone-300 text-sm text-red-600">칸 비우기</button>
+          <button onClick={onClose} className="px-3 py-2 rounded-lg border border-stone-300 text-sm">닫기</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const escHtml = (s) => String(s || '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+// ----- 인쇄 (새 창에서) -----
+const printBoardWindow = (board, cellsInfo, withChips, pagesInfo) => {
+  const w = window.open('', '_blank');
+  if (!w) { safeAlert('인쇄 창을 열 수 없어요. 브라우저의 팝업 차단을 풀어 주세요.'); return; }
+  const cols = board.cols || 4;
+  const rows = Math.ceil(cellsInfo.length / cols) || 1;
+  const cellH = Math.min(170 / rows, 260 / cols);
+  const boardCells = cellsInfo.map(c => c.hidden || !c.image && !c.label
+    ? '<div class="cell empty"></div>'
+    : `<div class="cell">${c.image ? `<img src="${escHtml(c.image)}">` : ''}${board.showLabel !== false && c.label ? `<div class="lb">${escHtml(c.label)}</div>` : ''}</div>`
+  ).join('');
+  const chipList = cellsInfo.filter(c => !c.hidden && (c.image || c.label));
+  const chipCells = chipList.map(c =>
+    `<div class="chip">${c.image ? `<img src="${escHtml(c.image)}">` : ''}${c.label ? `<div class="lb">${escHtml(c.label)}</div>` : ''}</div>`).join('');
+  const storyHtml = (pagesInfo || []).map((pg, i) => `<div class="story">
+${pg.image ? `<img src="${escHtml(pg.image)}">` : '<div class="noimg"></div>'}
+${pg.text ? `<div class="st">${escHtml(pg.text)}</div>` : ''}
+${(pg.questions || []).length ? `<div class="sq">${pg.questions.map(q => `<span>${escHtml(q)}</span>`).join('')}</div>` : ''}
+<div class="pn">${i + 1} / ${pagesInfo.length}</div></div>`).join('');
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(board.name)}</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Jua&display=swap');
+@page { size: A4 landscape; margin: 10mm; }
+body { margin: 0; font-family: 'Jua', system-ui, sans-serif; color: #1c1917; }
+h1 { font-size: 20pt; text-align: center; margin: 0 0 4mm; }
+.grid { display: grid; grid-template-columns: repeat(${cols}, 1fr); gap: 3mm; }
+.cell { height: ${cellH}mm; border: 0.4mm solid #a8a29e; border-radius: 3mm; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
+.cell.empty { border-style: dashed; border-color: #e7e5e4; }
+.cell img { max-width: 85%; max-height: 72%; object-fit: contain; }
+.lb { font-size: 16pt; margin-top: 1mm; text-align: center; }
+.page2 { page-break-before: always; }
+.chips { display: flex; flex-wrap: wrap; gap: 0; }
+.chip { width: 50mm; height: 50mm; box-sizing: border-box; border: 0.3mm dashed #57534e; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
+.chip img { max-width: 80%; max-height: 70%; object-fit: contain; }
+.chip .lb { font-size: 13pt; }
+.story { height: 186mm; display: flex; flex-direction: column; align-items: center; justify-content: center; page-break-after: always; }
+.story img { max-width: 100%; max-height: 135mm; object-fit: contain; border-radius: 3mm; }
+.story .noimg { width: 180mm; height: 120mm; border: 0.4mm dashed #d6d3d1; border-radius: 3mm; }
+.st { font-size: 24pt; margin-top: 5mm; text-align: center; }
+.sq { margin-top: 4mm; display: flex; gap: 4mm; }
+.sq span { font-size: 15pt; border: 0.4mm solid #D4728A; color: #993556; border-radius: 20mm; padding: 1.5mm 6mm; }
+.pn { font-size: 10pt; color: #a8a29e; margin-top: 3mm; }
+</style></head><body>
+${storyHtml}
+<h1>${escHtml(board.name)}</h1>
+<div class="grid">${boardCells}</div>
+${withChips && chipList.length ? `<div class="page2"><div class="chips">${chipCells}</div></div>` : ''}
+<script>
+var imgs = Array.prototype.slice.call(document.images);
+Promise.all(imgs.map(function(i){ return i.complete ? 0 : new Promise(function(r){ i.onload = i.onerror = r; }); }))
+  .then(function(){ return document.fonts ? document.fonts.ready : 0; })
+  .then(function(){ setTimeout(function(){ window.print(); }, 300); });
+<\/script></body></html>`);
+  w.document.close();
+};
+
+// ----- 새 판 만들기 창 (빈 판 / 카테고리로 만들기) -----
+const libCardOrder = (a, b) => String(a.id || '').localeCompare(String(b.id || ''), 'en', { numeric: true });
+const STORY_DEFAULT_QUESTIONS = ['뭐 하고 있어?', '기분이 어때?'];
+const isVideoFile = (f) => /^video\//.test(f?.type || '') || /\.(mp4|mov|m4v|webm)$/i.test(f?.name || '');
+const fileToDataUrl = (file) => new Promise((resolve, reject) => {
+  const fr = new FileReader();
+  fr.onload = () => resolve(fr.result);
+  fr.onerror = () => reject(new Error('파일을 읽을 수 없어요'));
+  fr.readAsDataURL(file);
+});
+// 이야기 영상 1개를 잠긴 저장 공간(aac-cards)에 올림 → 경로. 실패하면 null
+async function uploadStoryVideo(file) {
+  try {
+    if (file.size > 40 * 1024 * 1024) return null;
+    const dataUrl = await fileToDataUrl(file);
+    const headers = await authHeaders();
+    const r = await fetch(AAC_STORAGE_FN(), {
+      method: 'POST', headers,
+      body: JSON.stringify({ action: 'upload', cardId: `vid_${newId()}`, kind: '', contentType: file.type || 'video/mp4', base64: dataUrl }),
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j?.path || null;
+  } catch (e) { devWarn('영상 올리기 실패:', e); return null; }
+}
+const NewBoardModal = ({ library, categories, setCategories, setLibrary, onCreate, onClose, groupNames = [] }) => {
+  const [tab, setTab] = useState('cat');
+  const [storyFiles, setStoryFiles] = useState([]);
+  const [storyQ, setStoryQ] = useState(STORY_DEFAULT_QUESTIONS.join(', '));
+  const [storyGroup, setStoryGroup] = useState('이야기책');
+  const [busy, setBusy] = useState('');
+  const storyRef = useRef(null);
+  const [name, setName] = useState('');
+  const [cols, setCols] = useState(4);
+  const cats = useMemo(() => {
+    const list = (categories || []).map(c => ({ id: c.id, name: c.name, count: (library?.[c.id] || []).filter(x => x && x.image).length }));
+    const none = (library?.['__none__'] || []).filter(x => x && x.image).length;
+    if (none) list.push({ id: '__none__', name: '미분류', count: none });
+    return list.filter(c => c.count > 0);
+  }, [library, categories]);
+  const [checked, setChecked] = useState(() => new Set());
+  const toggle = (id) => setChecked(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allOn = cats.length > 0 && cats.every(c => checked.has(c.id));
+
+  const makeStory = async () => {
+    const title = name.trim();
+    if (!title) { safeAlert('이야기 판 이름을 적어 주세요.'); return; }
+    if (!storyFiles.length) { safeAlert('이야기 그림이나 영상을 골라 주세요.'); return; }
+    const files = [...storyFiles].sort(fileNameCompare);
+    const qs = storyQ.split(/[,，]/).map(x => x.trim()).filter(Boolean);
+    const hasImage = files.some(f => !isVideoFile(f));
+    let cat = null;
+    if (hasImage) {
+      cat = { id: `cat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name: `이야기 · ${title}`, color: CATEGORY_COLORS[(categories || []).length % CATEGORY_COLORS.length] };
+      setCategories(prev => [...(prev || []), cat]);
+    }
+    const pages = [], saved = [];
+    let videoFail = 0;
+    for (let i = 0; i < files.length; i++) {
+      setBusy(`${i + 1}/${files.length}개 올리는 중`);
+      const text = nameFromFile(files[i].name);
+      try {
+        if (isVideoFile(files[i])) {
+          const path = await uploadStoryVideo(files[i]);
+          if (path) pages.push({ cardId: null, videoPath: path, text, questions: [...qs] });
+          else videoFail++;
+        } else {
+          const c = await imageFileToCanvas(files[i], 1000);
+          const card = { id: newId(), image: c.toDataURL('image/jpeg', 0.85), originalImage: null, label: text, categoryId: cat.id };
+          if (await saveLibraryCard(card).catch(() => false)) { saved.push(card); pages.push({ cardId: card.id, text, questions: [...qs] }); }
+        }
+      } catch (e) { devWarn('이야기 파일 실패:', e); }
+    }
+    setBusy('');
+    if (saved.length) setLibrary(prev => ({ ...prev, [cat.id]: [...(prev[cat.id] || []), ...saved] }));
+    if (!pages.length) {
+      safeAlert(videoFail ? '영상을 올리지 못했어요.\n저장 공간이 영상을 받지 않도록 설정되어 있을 수 있어요. 이 화면을 캡처해서 Claude에게 보여 주세요.' : '올리지 못했어요. 다시 시도해 주세요.');
+      return;
+    }
+    if (pages.length < files.length) safeAlert(`${files.length - pages.length}개는 올라가지 않았어요.` + (videoFail ? ' (영상)' : ''));
+    onCreate([{ name: title, cols: 4, cells: null, kind: 'story', pages, group: storyGroup.trim() }]);
+  };
+
+  const make = () => {
+    if (tab === 'story') { makeStory(); return; }
+    if (tab === 'blank') {
+      onCreate([{ name: name.trim() || '새 판', cols: 4, cells: null }]);
+      return;
+    }
+    const pick = cats.filter(c => checked.has(c.id));
+    if (!pick.length) { safeAlert('판으로 만들 카테고리를 하나 이상 골라 주세요.'); return; }
+    onCreate(pick.map(c => {
+      const cards = [...(library?.[c.id] || [])].filter(x => x && x.image).sort(libCardOrder);
+      return { name: c.name, cols, cells: cards.map(x => ({ cardId: x.id, label: '' })) };
+    }));
+  };
+
+  const tabBtn = (t, label) => (
+    <button onClick={() => setTab(t)}
+      className={`px-3 py-1.5 rounded-lg text-sm border ${tab === t ? 'font-bold' : 'border-stone-300 text-stone-600'}`}
+      style={tab === t ? { borderColor: BOARD_PINK, color: '#993556', borderWidth: 1.5 } : undefined}>{label}</button>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-stone-200">
+          <h3 className="font-bold text-stone-900">새 판</h3>
+          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-stone-100" aria-label="닫기"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="px-5 pt-4 flex gap-2 flex-wrap">{tabBtn('blank', '빈 판')}{tabBtn('cat', '카테고리로 만들기')}{tabBtn('story', '이야기 판')}</div>
+        {busy ? (
+          <div className="p-10 text-center text-stone-600">
+            <div className="w-8 h-8 border-4 border-stone-200 border-t-stone-600 rounded-full animate-spin mx-auto mb-3" />{busy}
+          </div>
+        ) : tab === 'story' ? (
+          <div className="p-5 space-y-3">
+            <p className="text-sm text-stone-600 leading-relaxed">그림이나 영상을 한꺼번에 고르면 하나가 한 쪽이 돼요. 파일 이름 순서대로 쪽이 놓이고, 파일 이름이 그 쪽의 문장이 돼요. (예: 1_민수가 그네를 타요.png) 영상은 쪽을 열면 바로 재생돼요.</p>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="이야기 판 이름 (예: 놀이터에 갔어요)"
+              className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm" />
+            <input ref={storyRef} type="file" accept="image/*,video/*" multiple className="hidden"
+              onChange={(e) => { setStoryFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
+            <button onClick={() => storyRef.current?.click()} className="w-full py-2.5 rounded-lg border border-stone-300 text-sm flex items-center justify-center gap-1.5">
+              <ImageIcon className="w-4 h-4" /> {storyFiles.length ? `${storyFiles.length}개 골랐어요 (다시 고르기)` : '이야기 그림·영상 고르기'}
+            </button>
+            <label className="block text-sm text-stone-700">쪽마다 넣을 질문 <span className="text-stone-400">(쉼표로 나눠 적기)</span>
+              <input value={storyQ} onChange={(e) => setStoryQ(e.target.value)} placeholder="기분이 어떨 것 같아?"
+                className="mt-1 w-full border border-stone-300 rounded-lg px-3 py-2 text-sm" />
+            </label>
+            <label className="block text-sm text-stone-700">묶음
+              <input value={storyGroup} onChange={(e) => setStoryGroup(e.target.value)} list="aac-board-groups" placeholder="예: 이야기책"
+                className="mt-1 w-full border border-stone-300 rounded-lg px-3 py-2 text-sm" />
+              <datalist id="aac-board-groups">{groupNames.map(g => <option key={g} value={g} />)}</datalist>
+            </label>
+            <p className="text-xs text-stone-500">질문과 묶음은 '판 고치기'에서 바꿀 수 있어요. 답 칸은 빈 칸 8개로 시작해요.</p>
+          </div>
+        ) : tab === 'blank' ? (
+          <div className="p-5 space-y-2">
+            <p className="text-sm text-stone-600">빈 칸 8개짜리 판이 생겨요. '판 고치기'에서 칸마다 그림을 넣으면 돼요.</p>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="판 이름 (예: 다쳤어요 판)" autoFocus
+              className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
+        ) : (
+          <>
+            <div className="px-5 pt-3 space-y-2">
+              <p className="text-sm text-stone-600">고른 카테고리마다 판이 하나씩 생겨요. 판 이름은 카테고리 이름, 칸은 카테고리 안 그림 순서대로 들어가요.</p>
+              {cats.length > 0 && (
+                <label className="flex items-center gap-2 text-sm text-stone-700">
+                  <input type="checkbox" checked={allOn} onChange={() => setChecked(allOn ? new Set() : new Set(cats.map(c => c.id)))} /> 모두 고르기
+                </label>
+              )}
+            </div>
+            <div className="px-5 py-2 overflow-auto flex-1">
+              {cats.length === 0 && <p className="text-sm text-stone-400 py-6 text-center">그림이 들어 있는 카테고리가 없어요. 먼저 '칩판 넣기'로 그림을 넣어 주세요.</p>}
+              {cats.map(c => (
+                <label key={c.id} className="flex items-center gap-2 py-2 border-b border-stone-100 text-sm">
+                  <input type="checkbox" checked={checked.has(c.id)} onChange={() => toggle(c.id)} />
+                  <span className="flex-1">{c.name}</span>
+                  <span className="text-xs text-stone-500">{c.count}개</span>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+        <div className="px-5 py-3 border-t border-stone-200 flex items-center justify-between gap-2">
+          {tab === 'cat' ? (
+            <label className="text-sm text-stone-600 flex items-center gap-1.5">한 줄에
+              <select value={cols} onChange={(e) => setCols(parseInt(e.target.value, 10))} className="border border-stone-300 rounded-md px-1.5 py-1 bg-white">
+                {[2, 3, 4, 5, 6].map(n => <option key={n} value={n}>{n}칸</option>)}
+              </select>
+            </label>
+          ) : <span />}
+          <button onClick={make} disabled={!!busy} className="px-4 py-2 rounded-lg text-white text-sm font-bold disabled:opacity-50" style={{ background: BOARD_PINK }}>
+            {tab === 'cat' ? `판 만들기${checked.size ? ` (${cats.filter(c => checked.has(c.id)).length}개)` : ''}` : '판 만들기'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const newBoard = (name) => ({
+  id: `board_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+  name: name || '새 판',
+  cols: 4,
+  showLabel: true,
+  cells: Array.from({ length: 8 }, () => ({ cardId: null, label: '' })),
+  hidden: {},
+  updatedAt: Date.now(),
+});
+
+// ----- 말하는 판 화면 -----
+const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCategories }) => {
+  const [boards, setBoards] = useState([]);
+  const [builtins, setBuiltins] = useState([]); // 기본 판 (읽기 전용, hidden만 계정별). cells는 처음엔 null
+  const [showBuiltinUpload, setShowBuiltinUpload] = useState(false);
+  const builtinLoading = useRef({});
+  const isAdmin = currentUser?.role === 'admin';
+  const loadBuiltinIndex = async () => {
+    try {
+      const idx = await sharedGet(SHARED_INDEX_KEY);
+      if (idx.error || !idx.value) return [];
+      const list = JSON.parse(idx.value) || [];
+      const hres = await dataList(BUILTIN_HIDDEN_PREFIX);
+      const hmap = {};
+      for (const row of (hres.rows || [])) { try { hmap[row.key.slice(BUILTIN_HIDDEN_PREFIX.length)] = JSON.parse(row.value) || {}; } catch {} }
+      return list.filter(b => b && b.id).map(b => ({ ...b, builtin: true, cells: null, hidden: hmap[b.id] || {} }));
+    } catch (e) { devWarn('기본 판 목록 불러오기 실패:', e); return []; }
+  };
+  const ensureBuiltin = async (id) => {
+    if (!id || builtinLoading.current[id]) return;
+    builtinLoading.current[id] = true;
+    const r = await sharedGet(SHARED_BOARD_KEY(id));
+    let cells = null, extra = {};
+    try {
+      const o = r.value ? JSON.parse(r.value) : null;
+      cells = o ? (o.cells || []) : null;
+      if (o && o.kind === 'story') extra = { kind: 'story', pages: o.pages || [], sentence: o.sentence !== false };
+      else if (o && typeof o.sentence === 'boolean') extra = { sentence: o.sentence };
+    } catch { cells = null; }
+    if (!cells) { builtinLoading.current[id] = false; if (r.error) safeAlert('기본 판을 불러오지 못했어요. 잠시 뒤 다시 골라 주세요.'); return; }
+    setBuiltins(prev => prev.map(b => b.id === id ? { ...b, cells, ...extra } : b));
+  };
+  const [loaded, setLoaded] = useState(false);
+  const [activeId, setActiveId] = useState(null);
+  const [kids, setKids] = useState([]);
+  const [kidId, setKidId] = useState('all');
+  const [mode, setMode] = useState('use'); // use | edit | hide
+  const [big, setBig] = useState(false);
+  const [pickIndex, setPickIndex] = useState(null);
+  const [storyPage, setStoryPage] = useState(0);
+  const [pickPage, setPickPage] = useState(false);
+  const [sentence, setSentence] = useState([]); // 문장 줄에 쌓인 낱말 [{ label, image }]
+  const [videoUrls, setVideoUrls] = useState({}); // 영상 경로 → 서명 주소
+  const videoRef = useRef(null);
+  const pageVideoInput = useRef(null);
+  const [videoBusy, setVideoBusy] = useState(false);
+  useEffect(() => { setStoryPage(0); setSentence([]); }, [activeId]);
+  useEffect(() => { setSentence([]); }, [storyPage]);
+  const [showImport, setShowImport] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [saying, setSaying] = useState(null);
+  const [withChips, setWithChips] = useState(true);
+  const [rate, setRate] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem('aac_board_rate')); return v >= 0.5 && v <= 1.5 ? v : 0.9; } catch { return 0.9; }
+  });
+  const saveTimers = useRef({});
+  const sayTimer = useRef(null);
+  const speechWarned = useRef(false);
+
+  useEffect(() => { try { localStorage.setItem('aac_board_rate', String(rate)); } catch {} }, [rate]);
+
+  // 불러오기
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    setLoaded(false);
+    (async () => {
+      const res = await dataList(BOARD_PREFIX);
+      const list = [];
+      for (const r of (res.rows || [])) {
+        try { const b = JSON.parse(r.value); if (b && b.id && Array.isArray(b.cells)) list.push(b); } catch {}
+      }
+      list.sort((a, b) => (a.createdAt || a.updatedAt || 0) - (b.createdAt || b.updatedAt || 0));
+      let kidList = [];
+      try { const k = await dataGet(BOARD_KIDS_KEY); if (k?.value) kidList = JSON.parse(k.value) || []; } catch {}
+      // 기본 판 목록(그림은 판을 고를 때 불러옴) + 이 계정의 칸 숨기기 기록
+      const bi = await loadBuiltinIndex();
+      if (cancelled) return;
+      setBoards(list);
+      setBuiltins(bi);
+      setKids(Array.isArray(kidList) ? kidList : []);
+      setActiveId(prev => (prev && (list.some(b => b.id === prev) || bi.some(b => b.id === prev))) ? prev : (list[0]?.id || bi[0]?.id || null));
+      if (res._error) safeAlert('판을 불러오지 못했어요. 잠시 뒤 새로고침해 주세요.');
+      setLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, [currentUser]);
+
+  // 화면을 떠날 때 저장 대기 중인 판을 바로 저장
+  useEffect(() => () => {
+    Object.values(saveTimers.current).forEach(t => { if (t && t.fn) { clearTimeout(t.id); t.fn(); } });
+  }, []);
+
+  const scheduleSave = (b) => {
+    const prev = saveTimers.current[b.id];
+    if (prev) clearTimeout(prev.id);
+    const fn = () => {
+      delete saveTimers.current[b.id];
+      const key = b.builtin ? BUILTIN_HIDDEN_PREFIX + b.id : BOARD_PREFIX + b.id;
+      const val = b.builtin ? JSON.stringify(b.hidden || {}) : JSON.stringify(b);
+      dataSet(key, val).then(r => { if (!r) safeAlert(`'${b.name}' 판을 저장하지 못했어요. 인터넷 연결을 확인해 주세요.`); });
+    };
+    saveTimers.current[b.id] = { id: setTimeout(fn, 700), fn };
+  };
+
+  const board = boards.find(b => b.id === activeId) || builtins.find(b => b.id === activeId) || null;
+  useEffect(() => {
+    if (!board) return;
+    const need = new Set();
+    if (board.builtin && !board.cells) need.add(board.id);
+    if (!board.builtin) (board.cells || []).forEach(c => { if (c.ref && !c.cardId) need.add(String(c.ref).split('#')[0]); });
+    if (!board.builtin) (board.pages || []).forEach(pg => { if (pg.pageRef && !pg.cardId) need.add(String(pg.pageRef).split('#')[0]); });
+    need.forEach(id => { const b = builtins.find(x => x.id === id); if (b && !b.cells) ensureBuiltin(id); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, board?.cells, builtins.length]);
+  const reloadBuiltins = async () => {
+    builtinLoading.current = {};
+    const bi = await loadBuiltinIndex();
+    setBuiltins(bi);
+    setActiveId(prev => (prev && (boards.some(b => b.id === prev) || bi.some(b => b.id === prev))) ? prev : (boards[0]?.id || bi[0]?.id || null));
+  };
+  const builtinMap = useMemo(() => { const m = {}; builtins.forEach(b => { m[b.id] = b; }); return m; }, [builtins]);
+  const updateBoard = (fn) => {
+    if (!board) return;
+    if (board.builtin) {
+      // 기본 판은 칸 숨기기만 바뀜 (그림·말·칸 수는 그대로)
+      const nb = { ...board, hidden: fn(board).hidden || {} };
+      setBuiltins(prev => prev.map(x => x.id === nb.id ? nb : x));
+      scheduleSave(nb);
+      return;
+    }
+    const nb = { ...fn(board), updatedAt: Date.now() };
+    setBoards(prev => prev.map(x => x.id === nb.id ? nb : x));
+    scheduleSave(nb);
+  };
+  // 기본 판 → 내 판으로 복사 (그림은 기본 판을 가리키기만 해서 저장 용량이 작음)
+  const copyBuiltin = () => {
+    if (!board || !board.builtin) return;
+    if (!board.cells) { safeAlert('판을 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요.'); return; }
+    const b = { ...newBoard(board.name), createdAt: Date.now(), cols: board.cols || 4 };
+    b.cells = board.cells.map((c, i) => ({ cardId: null, label: c.label || '', ref: `${board.id}#${i}` }));
+    if (board.kind === 'story') {
+      b.kind = 'story';
+      b.sentence = board.sentence !== false;
+      b.pages = (board.pages || []).map((pg, i) => ({ cardId: null, text: pg.text || '', questions: [...(pg.questions || [])], pageRef: `${board.id}#${i}` }));
+    }
+    else if (typeof board.sentence === 'boolean') b.sentence = board.sentence;
+    b.hidden = JSON.parse(JSON.stringify(board.hidden || {}));
+    setBoards(prev => [...prev, b]);
+    setActiveId(b.id);
+    setMode('edit');
+    scheduleSave(b);
+  };
+
+  const cardMap = useMemo(() => {
+    const m = {};
+    Object.values(library || {}).forEach(arr => (arr || []).forEach(c => { if (c && c.id) m[c.id] = c; }));
+    return m;
+  }, [library]);
+
+  const hiddenList = board ? (board.hidden?.[kidId] ?? board.hidden?.all ?? []) : [];
+  const cellView = (cell, i) => {
+    const card = cell.cardId ? cardMap[cell.cardId] : null;
+    let refImg = '';
+    if (!card && cell.ref) {
+      const [bid, idx] = String(cell.ref).split('#');
+      refImg = builtinMap[bid]?.cells?.[parseInt(idx, 10)]?.image || '';
+    }
+    return { image: card?.image || cell.image || refImg || '', label: cell.label || card?.label || '', hidden: hiddenList.includes(i), missing: !!cell.cardId && !card };
+  };
+
+  const addBoard = () => setShowNew(true);
+  // specs: [{ name, cols, cells(null이면 빈 칸 8개) }]
+  const createBoards = (specs) => {
+    const now = Date.now();
+    const made = specs.map((sp, k) => {
+      const b = { ...newBoard(sp.name), createdAt: now + k };
+      b.id = `${b.id}_${k}`;
+      b.cols = sp.cols || 4;
+      if (sp.cells && sp.cells.length) b.cells = sp.cells;
+      if (sp.kind === 'story') { b.kind = 'story'; b.pages = sp.pages || []; b.sentence = true; }
+      if (sp.group) b.group = sp.group;
+      return b;
+    });
+    setBoards(prev => [...prev, ...made]);
+    setActiveId(made[0].id);
+    setMode(made.length === 1 && !specs[0].cells ? 'edit' : 'use');
+    made.forEach(scheduleSave);
+    setShowNew(false);
+    if (made.length > 1) safeAlert(`판 ${made.length}개를 만들었어요. 위의 판 목록에서 골라 쓰면 돼요.`);
+  };
+  const deleteBoard = async () => {
+    if (!board) return;
+    if (!safeConfirm(`'${board.name}' 판을 지울까요?\n지운 판은 되살릴 수 없어요. (카테고리의 그림은 그대로 남아요)`)) return;
+    const t = saveTimers.current[board.id];
+    if (t) { clearTimeout(t.id); delete saveTimers.current[board.id]; }
+    const r = await dataDelete(BOARD_PREFIX + board.id);
+    if (!r) { safeAlert('판을 지우지 못했어요. 다시 시도해 주세요.'); return; }
+    const vids = (board.pages || []).map(pg => pg.videoPath).filter(Boolean);
+    if (vids.length) storageRemove(vids).catch(() => {});
+    const rest = boards.filter(b => b.id !== board.id);
+    setBoards(rest);
+    setActiveId(rest[0]?.id || builtins[0]?.id || null);
+    setMode('use');
+  };
+
+  const saveKids = (list) => {
+    setKids(list);
+    dataSet(BOARD_KIDS_KEY, JSON.stringify(list)).then(r => { if (!r) safeAlert('아이 목록을 저장하지 못했어요.'); });
+  };
+  const onKidChange = (v) => {
+    if (v === '__add__') {
+      const name = safePrompt('아이 이름(또는 별칭)을 적어 주세요', '');
+      if (!name || !name.trim()) return;
+      const k = { id: `kid_${Date.now()}`, name: name.trim() };
+      saveKids([...kids, k]);
+      setKidId(k.id);
+      return;
+    }
+    setKidId(v);
+  };
+  const removeKid = () => {
+    const k = kids.find(x => x.id === kidId);
+    if (!k) return;
+    if (!safeConfirm(`'${k.name}'을(를) 아이 목록에서 뺄까요?\n판은 그대로 남아요.`)) return;
+    saveKids(kids.filter(x => x.id !== kidId));
+    setKidId('all');
+  };
+
+  const onCellClick = (i) => {
+    if (!board) return;
+    if (mode === 'edit') { setPickIndex(i); return; }
+    if (mode === 'hide') {
+      updateBoard(b => {
+        const cur = b.hidden?.[kidId] ?? b.hidden?.all ?? [];
+        const next = cur.includes(i) ? cur.filter(x => x !== i) : [...cur, i];
+        return { ...b, hidden: { ...(b.hidden || {}), [kidId]: next } };
+      });
+      return;
+    }
+    const v = cellView(board.cells[i], i);
+    if (!v.label) return;
+    if (sentenceOn) setSentence(prev => [...prev, { label: v.label, image: v.image }]);
+    const ok = boardSpeak(v.label, rate);
+    if (!ok && !speechWarned.current) {
+      speechWarned.current = true;
+      safeAlert('이 브라우저에서는 소리로 읽기를 쓸 수 없어요.\n크롬이나 사파리 최신 버전에서 열어 주세요.');
+    }
+    setSaying(i);
+    if (sayTimer.current) clearTimeout(sayTimer.current);
+    sayTimer.current = setTimeout(() => setSaying(null), 900);
+  };
+
+  const setCell = (i, patch) => updateBoard(b => ({ ...b, cells: b.cells.map((c, j) => j === i ? { ...c, ...patch } : c) }));
+
+  const doPrint = () => {
+    if (!board || !board.cells) return;
+    const pagesInfo = board.kind === 'story'
+      ? (board.pages || []).map(pg => {
+        let image = (pg.cardId && cardMap[pg.cardId]?.image) || pg.image || '';
+        if (!image && pg.pageRef) { const [bid, idx] = String(pg.pageRef).split('#'); image = builtinMap[bid]?.pages?.[parseInt(idx, 10)]?.image || ''; }
+        return { image, text: pg.text || '', questions: (pg.questions || []).filter(Boolean) };
+      })
+      : null;
+    printBoardWindow(board, board.cells.map(cellView), withChips, pagesInfo);
+  };
+
+  const testSound = () => {
+    if (!boardSpeak('소리가 잘 들려요', rate)) safeAlert('이 브라우저에서는 소리로 읽기를 쓸 수 없어요.');
+  };
+
+  const kidName = kidId === 'all' ? '모든 아이' : (kids.find(k => k.id === kidId)?.name || '모든 아이');
+
+  // ----- 이야기 판: 위쪽 그림·문장·질문 -----
+  const myGroups = useMemo(() => {
+    const out = [];
+    boards.forEach(b => { const g = (b.group || '').trim(); if (g && !out.includes(g)) out.push(g); });
+    return out;
+  }, [boards]);
+  // 고른 이야기 판의 영상 주소 받기
+  useEffect(() => {
+    const need = (board?.pages || []).map(pg => pg.videoPath).filter(pth => pth && !videoUrls[pth]);
+    if (!need.length) return;
+    let cancelled = false;
+    resolveSignedUrls(need).then(m => { if (!cancelled && m) setVideoUrls(prev => ({ ...prev, ...m })); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, board?.pages]);
+  const isStory = board?.kind === 'story';
+  const sentenceOn = !!board && (board.sentence ?? isStory);
+  const pages = isStory ? (board.pages || []) : [];
+  const pIdx = Math.min(storyPage, Math.max(0, pages.length - 1));
+  const page = pages[pIdx] || null;
+  const speakText = (t) => {
+    if (!t) return;
+    if (!boardSpeak(t, rate) && !speechWarned.current) {
+      speechWarned.current = true;
+      safeAlert('이 브라우저에서는 소리로 읽기를 쓸 수 없어요.\n크롬이나 사파리 최신 버전에서 열어 주세요.');
+    }
+  };
+  const setPage = (patch) => updateBoard(b => ({ ...b, pages: (b.pages || []).map((pg, j) => j === pIdx ? { ...pg, ...patch } : pg) }));
+  const renderStory = (large) => {
+    if (!isStory) return null;
+    if (board.builtin && !board.cells) return null;
+    if (!page) {
+      return (
+        <div className="rounded-2xl border-2 border-dashed border-stone-300 py-10 text-center text-sm text-stone-500 space-y-2">
+          <p>이야기 쪽이 없어요.</p>
+          {mode === 'edit' && <button onClick={() => updateBoard(b => ({ ...b, pages: [{ cardId: null, text: '', questions: [...STORY_DEFAULT_QUESTIONS] }] }))}
+            className="px-3 py-1.5 rounded-lg border border-stone-300">쪽 더하기</button>}
+        </div>
+      );
+    }
+    let img = page.cardId ? cardMap[page.cardId]?.image : (page.image || '');
+    if (!img && page.pageRef) {
+      const [bid, idx] = String(page.pageRef).split('#');
+      img = builtinMap[bid]?.pages?.[parseInt(idx, 10)]?.image || '';
+    }
+    const vurl = page.videoPath ? videoUrls[page.videoPath] : '';
+    const qs = (page.questions || []).filter(q => (q || '').trim());
+    const replay = () => { const v = videoRef.current; if (v) { try { v.currentTime = 0; v.play(); } catch {} } };
+    return (
+      <div className="space-y-3">
+        <div className="grid items-center gap-2" style={{ gridTemplateColumns: '44px minmax(0,1fr) 44px' }}>
+          <button onClick={() => setStoryPage(Math.max(0, pIdx - 1))} disabled={pIdx === 0}
+            className="h-12 rounded-xl border border-stone-200 bg-white flex items-center justify-center disabled:opacity-30" aria-label="앞 쪽"><ChevronDown className="w-5 h-5 rotate-90" /></button>
+          {page.videoPath ? (
+            <div className="rounded-2xl border-2 border-stone-200 bg-white p-2 flex flex-col items-center justify-center gap-2">
+              <div className="relative w-full">
+                {vurl
+                  ? <video key={page.videoPath} ref={videoRef} src={vurl} autoPlay playsInline preload="auto"
+                      onClick={replay} className={`w-full rounded-xl bg-stone-900 object-contain ${large ? 'max-h-[52vh]' : 'max-h-80'}`} />
+                  : <div className="w-full aspect-video rounded-xl bg-stone-100 flex items-center justify-center text-sm text-stone-400">영상을 불러오는 중…</div>}
+                {vurl && (
+                  <button onClick={replay} className="absolute right-2 bottom-2 rounded-full bg-white/90 border border-stone-200 px-3 py-1.5 text-sm font-bold text-stone-700 flex items-center gap-1">
+                    <RotateCw className="w-4 h-4" /> 다시 보기
+                  </button>
+                )}
+              </div>
+              {page.text && (
+                <button onClick={() => speakText(page.text)} className={`font-bold text-stone-800 text-center ${large ? 'text-2xl sm:text-3xl' : 'text-lg sm:text-xl'}`}>{page.text}</button>
+              )}
+            </div>
+          ) : (
+          <button onClick={() => mode === 'edit' ? setPickPage(true) : speakText(page.text)}
+            className="rounded-2xl border-2 border-stone-200 bg-white p-2 flex flex-col items-center justify-center gap-2">
+            {img
+              ? <img src={img} alt={page.text} className={`w-full object-contain rounded-xl ${large ? 'max-h-[48vh]' : 'max-h-72'}`} draggable={false} />
+              : <span className="py-12 text-stone-400 text-sm flex flex-col items-center gap-1"><ImageIcon className="w-8 h-8" />{mode === 'edit' ? '눌러서 그림 넣기' : '그림 없음'}</span>}
+            {page.text && <span className={`font-bold text-stone-800 text-center ${large ? 'text-2xl sm:text-3xl' : 'text-lg sm:text-xl'}`}>{page.text}</span>}
+          </button>
+          )}
+          <button onClick={() => setStoryPage(Math.min(pages.length - 1, pIdx + 1))} disabled={pIdx >= pages.length - 1}
+            className="h-12 rounded-xl border border-stone-200 bg-white flex items-center justify-center disabled:opacity-30" aria-label="다음 쪽"><ChevronDown className="w-5 h-5 -rotate-90" /></button>
+        </div>
+        <div className="flex items-center justify-center gap-2 flex-wrap">
+          {qs.map((q, k) => (
+            <button key={k} onClick={() => speakText(q)}
+              className={`rounded-full border-2 bg-white flex items-center gap-1.5 font-bold ${large ? 'px-5 py-2.5 text-lg' : 'px-4 py-1.5 text-sm'}`}
+              style={{ borderColor: BOARD_PINK, color: '#993556' }}><Volume2 className="w-4 h-4" /> {q}</button>
+          ))}
+          <span className="text-xs text-stone-400 ml-1">{pIdx + 1} / {pages.length}쪽</span>
+        </div>
+        {mode === 'edit' && (
+          <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 space-y-2 text-sm">
+            <label className="flex items-center gap-2">이 쪽 문장
+              <input value={page.text || ''} onChange={(e) => setPage({ text: e.target.value })} placeholder="예: 민수가 그네를 타요."
+                className="flex-1 border border-stone-300 rounded-md px-2 py-1" />
+            </label>
+            {(page.questions || []).map((q, k) => (
+              <div key={k} className="flex items-center gap-2">
+                <span className="flex-shrink-0">질문 {k + 1}</span>
+                <input value={q} onChange={(e) => setPage({ questions: page.questions.map((x, j) => j === k ? e.target.value : x) })}
+                  className="flex-1 border border-stone-300 rounded-md px-2 py-1" />
+                <button onClick={() => setPage({ questions: page.questions.filter((_, j) => j !== k) })} className="p-1 text-stone-500" aria-label="질문 지우기"><X className="w-4 h-4" /></button>
+              </div>
+            ))}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button onClick={() => setPage({ questions: [...(page.questions || []), ''] })} className="px-2.5 py-1 rounded-md border border-stone-300 flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> 질문 더하기</button>
+              <button onClick={() => setPickPage(true)} className="px-2.5 py-1 rounded-md border border-stone-300 flex items-center gap-1"><ImageIcon className="w-3.5 h-3.5" /> 그림 넣기</button>
+              <input ref={pageVideoInput} type="file" accept="video/*" className="hidden" onChange={async (e) => {
+                const f = e.target.files && e.target.files[0]; e.target.value = '';
+                if (!f) return;
+                setVideoBusy(true);
+                const path = await uploadStoryVideo(f);
+                setVideoBusy(false);
+                if (!path) { safeAlert('영상을 올리지 못했어요.\n저장 공간이 영상을 받지 않도록 설정되어 있을 수 있어요.'); return; }
+                const old = page.videoPath;
+                setPage({ videoPath: path, cardId: null });
+                if (old) storageRemove([old]).catch(() => {});
+              }} />
+              <button onClick={() => pageVideoInput.current?.click()} disabled={videoBusy} className="px-2.5 py-1 rounded-md border border-stone-300 flex items-center gap-1 disabled:opacity-50">
+                <RotateCw className={`w-3.5 h-3.5 ${videoBusy ? 'animate-spin' : ''}`} /> {videoBusy ? '영상 올리는 중…' : '영상 넣기'}
+              </button>
+              <div className="flex-1" />
+              <button onClick={() => {
+                updateBoard(b => { const ps = [...(b.pages || [])]; ps.splice(pIdx + 1, 0, { cardId: null, text: '', questions: [...STORY_DEFAULT_QUESTIONS] }); return { ...b, pages: ps }; });
+                setStoryPage(pIdx + 1);
+              }} className="px-2.5 py-1 rounded-md border border-stone-300 flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> 뒤에 쪽 더하기</button>
+              <button disabled={pIdx === 0} onClick={() => {
+                updateBoard(b => { const ps = [...(b.pages || [])]; [ps[pIdx - 1], ps[pIdx]] = [ps[pIdx], ps[pIdx - 1]]; return { ...b, pages: ps }; });
+                setStoryPage(pIdx - 1);
+              }} className="px-2.5 py-1 rounded-md border border-stone-300 disabled:opacity-30">앞으로</button>
+              <button disabled={pIdx >= pages.length - 1} onClick={() => {
+                updateBoard(b => { const ps = [...(b.pages || [])]; [ps[pIdx + 1], ps[pIdx]] = [ps[pIdx], ps[pIdx + 1]]; return { ...b, pages: ps }; });
+                setStoryPage(pIdx + 1);
+              }} className="px-2.5 py-1 rounded-md border border-stone-300 disabled:opacity-30">뒤로</button>
+              <button onClick={() => {
+                if (!safeConfirm(`${pIdx + 1}쪽을 지울까요?`)) return;
+                if (page.videoPath) storageRemove([page.videoPath]).catch(() => {});
+                updateBoard(b => ({ ...b, pages: (b.pages || []).filter((_, j) => j !== pIdx) }));
+                setStoryPage(Math.max(0, pIdx - 1));
+              }} className="px-2.5 py-1 rounded-md border border-stone-300 text-red-600 flex items-center gap-1"><Trash2 className="w-3.5 h-3.5" /> 이 쪽 지우기</button>
+            </div>
+          </div>
+        )}
+        <div className="border-t border-stone-200" />
+      </div>
+    );
+  };
+
+  const renderSentenceBar = (large) => {
+    if (!sentenceOn || mode !== 'use') return null;
+    const text = sentence.map(w => w.label).join(' ');
+    return (
+      <div className="flex items-stretch gap-2 mb-3">
+        <button onClick={() => text && speakText(text)}
+          className={`flex-1 rounded-2xl border-2 bg-white px-2 py-1.5 flex items-center gap-1.5 flex-wrap text-left ${large ? 'min-h-[96px]' : 'min-h-[72px]'}`}
+          style={{ borderColor: BOARD_PINK }} aria-label="문장 읽기">
+          {sentence.length === 0
+            ? <span className="text-sm text-stone-400 pl-2">낱말을 눌러 문장을 만들어요</span>
+            : sentence.map((w, k) => (
+              <span key={k} className="flex flex-col items-center bg-stone-50 border border-stone-200 rounded-lg px-1.5 py-1">
+                {w.image && <img src={w.image} alt="" className={`object-contain ${large ? 'w-16 h-16' : 'w-11 h-11'}`} draggable={false} />}
+                <span className={`font-bold text-stone-800 ${large ? 'text-base' : 'text-xs'}`}>{w.label}</span>
+              </span>
+            ))}
+        </button>
+        <button onClick={() => setSentence(prev => prev.slice(0, -1))} className="w-14 rounded-2xl border border-stone-200 bg-white flex flex-col items-center justify-center text-stone-600 text-[11px] gap-0.5" aria-label="하나 지우기">
+          <X className="w-5 h-5" />하나
+        </button>
+        <button onClick={() => setSentence([])} className="w-14 rounded-2xl border border-stone-200 bg-white flex flex-col items-center justify-center text-stone-600 text-[11px] gap-0.5" aria-label="모두 지우기">
+          <Trash2 className="w-5 h-5" />모두
+        </button>
+      </div>
+    );
+  };
+
+  const renderGrid = (large) => {
+    if (!board) return null;
+    if (!board.cells) return <div className="py-16 text-center text-stone-500 text-sm">판을 불러오는 중…</div>;
+    return (<>
+      {renderSentenceBar(large)}
+      <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${board.cols || 4}, minmax(0, 1fr))` }}>
+        {board.cells.map((cell, i) => {
+          const v = cellView(cell, i);
+          const empty = !v.image && !v.label;
+          // 수업 화면: 숨긴 칸·빈 칸은 자리만 남김 (아이가 누를 것만 보이게)
+          if (mode === 'use' && (v.hidden || empty)) return <div key={i} className="aspect-square" aria-hidden="true" />;
+          return (
+            <button key={i} onClick={() => onCellClick(i)}
+              className={`relative aspect-square rounded-2xl border-2 bg-white flex flex-col items-center justify-center p-1.5 transition active:scale-95 ${
+                v.hidden ? 'border-dashed border-stone-300 opacity-40' : empty ? 'border-dashed border-stone-300' : 'border-stone-200'}`}
+              style={saying === i ? { borderColor: BOARD_PINK, boxShadow: `0 0 0 3px ${BOARD_PINK}55` } : undefined}>
+              {v.image
+                ? <img src={v.image} alt={v.label} className={`w-full object-contain ${board.showLabel !== false && v.label ? 'h-[72%]' : 'h-full'}`} draggable={false} />
+                : (empty && mode === 'edit' ? <Plus className="w-8 h-8 text-stone-300" /> : null)}
+              {board.showLabel !== false && v.label && (
+                <span className={`font-bold text-stone-800 leading-tight text-center ${large ? 'text-lg sm:text-2xl' : 'text-sm sm:text-base'}`}>{v.label}</span>
+              )}
+              {v.missing && mode === 'edit' && <span className="absolute top-1 left-1 text-[10px] text-red-500">그림 없음</span>}
+              {mode === 'hide' && (
+                <span className="absolute top-1 right-1 text-[11px] px-1.5 rounded bg-stone-100 text-stone-600">{v.hidden ? '숨김' : '보임'}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </>);
+  };
+
+  if (!loaded) {
+    return <div className="py-16 text-center text-stone-500 text-sm">판을 불러오는 중…</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* 위 도구 줄 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <select value={activeId || ''} onChange={(e) => { setActiveId(e.target.value || null); setMode('use'); }}
+          className="border border-stone-300 rounded-lg px-2 py-1.5 text-sm bg-white max-w-[12rem]">
+          {boards.length === 0 && builtins.length === 0 && <option value="">판이 없어요</option>}
+          {boards.some(b => !(b.group || '').trim()) && (
+            <optgroup label="내 판">
+              {boards.filter(b => !(b.group || '').trim()).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </optgroup>
+          )}
+          {myGroups.map(g => (
+            <optgroup key={'my_' + g} label={g}>
+              {boards.filter(b => (b.group || '').trim() === g).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </optgroup>
+          ))}
+          {[...new Set(builtins.map(b => b.group || '기본 판'))].map(g => (
+            <optgroup key={g} label={g}>
+              {builtins.filter(b => (b.group || '기본 판') === g).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </optgroup>
+          ))}
+        </select>
+        <button onClick={addBoard} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Plus className="w-4 h-4" /> 새 판</button>
+        <select value={kidId} onChange={(e) => onKidChange(e.target.value)}
+          className="border border-stone-300 rounded-lg px-2 py-1.5 text-sm bg-white max-w-[10rem]">
+          <option value="all">모든 아이</option>
+          {kids.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
+          <option value="__add__">+ 아이 추가</option>
+        </select>
+        {kidId !== 'all' && <button onClick={removeKid} className="text-xs text-stone-500 underline">아이 빼기</button>}
+        <div className="flex-1" />
+        {isAdmin && (
+          <button onClick={() => setShowBuiltinUpload(true)} className="px-2.5 py-1.5 rounded-lg border text-sm flex items-center gap-1"
+            style={{ borderColor: BOARD_PINK, color: '#993556', borderWidth: 1.5 }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>
+        )}
+        <button onClick={() => setShowImport(true)} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Upload className="w-4 h-4" /> 칩판 넣기</button>
+      </div>
+
+      {!board ? (
+        <div className="rounded-2xl border-2 border-dashed border-stone-300 py-14 px-4 text-center space-y-3">
+          <p className="text-stone-600 text-sm">아직 만든 판이 없어요.<br />'새 판'을 누르고 칸을 눌러 그림을 넣어 보세요.</p>
+          <button onClick={addBoard} className="px-4 py-2 rounded-lg text-white text-sm font-bold" style={{ background: BOARD_PINK }}>새 판 만들기</button>
+        </div>
+      ) : (
+        <>
+          {/* 모드 줄 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex bg-stone-100 rounded-lg p-0.5">
+              {[['use', '수업', Volume2], ['edit', '판 고치기', Pencil], ['hide', '칸 숨기기', EyeOff]].map(([m, t, Icon]) => (
+                <button key={m} onClick={() => {
+                  if (m === 'edit' && board.builtin) {
+                    if (safeConfirm('기본 판은 그대로 두고, 내 판으로 복사해서 고쳐요.\n복사할까요?')) copyBuiltin();
+                    return;
+                  }
+                  setMode(m);
+                }}
+                  className={`px-3 py-1.5 rounded-md text-sm flex items-center gap-1 ${mode === m ? 'bg-white shadow-sm font-bold text-stone-900' : 'text-stone-500'}`}>
+                  <Icon className="w-4 h-4" /> {t}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1" />
+            <button onClick={() => { setMode('use'); setBig(true); }} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Maximize2 className="w-4 h-4" /> 크게 보기</button>
+            <button onClick={doPrint} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Printer className="w-4 h-4" /> 인쇄</button>
+          </div>
+
+          {mode === 'edit' && (
+            <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 flex flex-wrap items-center gap-3 text-sm">
+              <label className="flex items-center gap-1.5">판 이름
+                <input value={board.name} onChange={(e) => updateBoard(b => ({ ...b, name: e.target.value }))}
+                  className="border border-stone-300 rounded-md px-2 py-1 w-36" />
+              </label>
+              <label className="flex items-center gap-1.5">묶음
+                <select value={(board.group || '').trim()} onChange={(e) => {
+                  let g = e.target.value;
+                  if (g === '__new__') {
+                    const n = safePrompt('새 묶음 이름을 적어 주세요 (예: 기분이 어떨 것 같아?)', '');
+                    if (!n || !n.trim()) return;
+                    g = n.trim();
+                  }
+                  updateBoard(b => ({ ...b, group: g }));
+                }} className="border border-stone-300 rounded-md px-1.5 py-1 bg-white max-w-[11rem]">
+                  <option value="">묶음 없음</option>
+                  {myGroups.map(g => <option key={g} value={g}>{g}</option>)}
+                  <option value="__new__">+ 새 묶음</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-1.5">한 줄에
+                <select value={board.cols || 4} onChange={(e) => updateBoard(b => ({ ...b, cols: parseInt(e.target.value, 10) }))}
+                  className="border border-stone-300 rounded-md px-1.5 py-1 bg-white">
+                  {[1, 2, 3, 4, 5, 6].map(n => <option key={n} value={n}>{n}칸</option>)}
+                </select>
+              </label>
+              <span className="flex items-center gap-1">칸 수 {board.cells.length}
+                <button onClick={() => updateBoard(b => ({ ...b, cells: [...b.cells, { cardId: null, label: '' }] }))}
+                  className="ml-1 w-7 h-7 rounded-md border border-stone-300 flex items-center justify-center" aria-label="칸 더하기"><Plus className="w-4 h-4" /></button>
+                <button onClick={() => {
+                  if (board.cells.length <= 1) return;
+                  const last = board.cells[board.cells.length - 1];
+                  if ((last.cardId || last.label) && !safeConfirm('마지막 칸을 지울까요?')) return;
+                  updateBoard(b => ({ ...b, cells: b.cells.slice(0, -1) }));
+                }} className="w-7 h-7 rounded-md border border-stone-300 flex items-center justify-center text-lg leading-none" aria-label="마지막 칸 빼기">−</button>
+              </span>
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" checked={board.showLabel !== false} onChange={(e) => updateBoard(b => ({ ...b, showLabel: e.target.checked }))} />
+                그림 밑 글자 보이기
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" checked={sentenceOn} onChange={(e) => updateBoard(b => ({ ...b, sentence: e.target.checked }))} />
+                낱말 이어 문장 만들기
+              </label>
+              <label className="flex items-center gap-1.5">말 빠르기
+                <input type="range" min="0.5" max="1.3" step="0.1" value={rate} onChange={(e) => setRate(parseFloat(e.target.value))} />
+                <span className="tabular-nums w-7">{rate.toFixed(1)}</span>
+              </label>
+              <button onClick={testSound} className="text-xs underline text-stone-600">소리 들어 보기</button>
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" checked={withChips} onChange={(e) => setWithChips(e.target.checked)} />
+                인쇄할 때 오려 쓰는 칩도 함께
+              </label>
+              <div className="flex-1" />
+              <button onClick={deleteBoard} className="text-red-600 flex items-center gap-1"><Trash2 className="w-4 h-4" /> 판 지우기</button>
+            </div>
+          )}
+
+          <p className="text-xs text-stone-500">
+            {mode === 'use' && (sentenceOn
+              ? `낱말을 누르면 읽고 문장 줄에 쌓여요. 문장 줄을 누르면 문장 전체를 읽어요. 지금 ${kidName}에게 보이는 칸만 나와요.`
+              : `그림을 누르면 소리로 읽어요. 지금 ${kidName}에게 보이는 칸만 나와요.`)}
+            {mode === 'edit' && (isStory ? '위쪽 그림을 누르면 그림을 바꾸고, 아래 칸을 누르면 답 그림과 말을 바꿔요.' : '칸을 누르면 그림과 읽어 줄 말을 바꿔요.')}
+            {mode === 'hide' && `칸을 누르면 ${kidName}에게 숨기거나 다시 보여요. 숨긴 칸은 자리만 남고 눌러도 소리가 나지 않아요.`}
+          </p>
+
+          {renderStory(false)}
+          {renderGrid(false)}
+        </>
+      )}
+
+      {big && board && (
+        <div className="fixed inset-0 z-50 bg-white p-3 sm:p-6 overflow-auto">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-stone-400 text-sm">{board.name}</span>
+            <button onClick={() => setBig(false)} className="p-2 rounded-lg border border-stone-200 text-stone-500" aria-label="크게 보기 닫기"><X className="w-5 h-5" /></button>
+          </div>
+          <div className="max-w-5xl mx-auto space-y-3">{renderStory(true)}{renderGrid(true)}</div>
+        </div>
+      )}
+
+      {pickIndex !== null && board && (
+        <BoardCardPicker
+          library={library}
+          categories={categories}
+          cell={{ ...board.cells[pickIndex], label: board.cells[pickIndex]?.label || cellView(board.cells[pickIndex], pickIndex).label }}
+          onPick={(card, label) => setCell(pickIndex, { cardId: card.id, ref: null, label: label || card.label || '' })}
+          onLabel={(label) => setCell(pickIndex, { label })}
+          onClear={() => setCell(pickIndex, { cardId: null, ref: null, label: '' })}
+          onClose={() => setPickIndex(null)}
+        />
+      )}
+
+      {pickPage && board && page && (
+        <BoardCardPicker
+          library={library}
+          categories={categories}
+          cell={{ label: page.text || '' }}
+          onPick={(card, label) => setPage({ cardId: card.id, videoPath: null, ...(label !== null && label !== undefined ? { text: label } : {}) })}
+          onLabel={(label) => setPage({ text: label })}
+          onClear={() => setPage({ cardId: null })}
+          onClose={() => setPickPage(false)}
+        />
+      )}
+
+      {showBuiltinUpload && (
+        <BuiltinUploadModal count={builtins.length} onClose={() => setShowBuiltinUpload(false)}
+          onDone={() => { setShowBuiltinUpload(false); reloadBuiltins(); }} />
+      )}
+
+      {showNew && (
+        <NewBoardModal library={library} categories={categories} setCategories={setCategories} setLibrary={setLibrary} groupNames={myGroups}
+          onCreate={createBoards} onClose={() => setShowNew(false)} />
+      )}
+
+      {showImport && (
+        <ChipImportModal
+          categories={categories}
+          setCategories={setCategories}
+          setLibrary={setLibrary}
+          onClose={() => setShowImport(false)}
+        />
+      )}
+    </div>
+  );
+};
+
 export default function App() {
   // ───── 인증 상태 ─────
   const [currentUser, setCurrentUser] = useState(null); // null이면 로그인 안 됨
@@ -5932,9 +7541,25 @@ export default function App() {
             >
               <Folder className="w-4 h-4" /> 카테고리
             </button>
+            <button
+              onClick={() => setViewMode('board')}
+              className={`flex-1 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 ${
+                viewMode === 'board' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-700'
+              }`}
+            >
+              <Volume2 className="w-4 h-4" /> 말하는 판
+            </button>
           </div>
 
-          {viewMode === 'library' ? (
+          {viewMode === 'board' ? (
+            <SpeakingBoardView
+              currentUser={currentUser}
+              library={library}
+              setLibrary={setLibrary}
+              categories={categories}
+              setCategories={setCategories}
+            />
+          ) : viewMode === 'library' ? (
             <>
             <input
               ref={libraryImportFileRef}
