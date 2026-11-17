@@ -3589,18 +3589,86 @@ async function sharedDelete(key) {
   } catch (e) { return false; }
 }
 
+// ----- 기본 판 영상: 로그인한 선생님 모두가 보는 잠긴 저장 공간(aac-shared-media) -----
+const SHARED_MEDIA_BUCKET = 'aac-shared-media';
+const SHARED_MEDIA_TTL = 3600;
+async function sharedMediaUpload(path, file) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${SHARED_MEDIA_BUCKET}/${path.split('/').map(encodeURIComponent).join('/')}`, {
+      method: 'POST',
+      headers: { apikey: headers.apikey, Authorization: headers.Authorization, 'Content-Type': file.type || 'video/mp4', 'x-upsert': 'true' },
+      body: file,
+    });
+    return r.ok;
+  } catch (e) { devWarn('기본 판 영상 올리기 실패:', e); return false; }
+}
+const _sharedMediaCache = new Map();
+async function sharedMediaSign(paths) {
+  const now = Date.now(), out = {}, need = [];
+  for (const p of [...new Set((paths || []).filter(Boolean))]) {
+    const hit = _sharedMediaCache.get(p);
+    if (hit && hit.exp > now) out[p] = hit.url; else need.push(p);
+  }
+  if (!need.length) return out;
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${SHARED_MEDIA_BUCKET}`, {
+      method: 'POST', headers, body: JSON.stringify({ expiresIn: SHARED_MEDIA_TTL, paths: need }),
+    });
+    if (!r.ok) return out;
+    const list = await r.json();
+    (Array.isArray(list) ? list : []).forEach(o => {
+      const rel = o && (o.signedURL || o.signedUrl);
+      if (o && o.path && rel) {
+        const url = /^https?:/.test(rel) ? rel : `${SUPABASE_URL}/storage/v1${rel.startsWith('/') ? '' : '/'}${rel}`;
+        out[o.path] = url;
+        _sharedMediaCache.set(o.path, { url, exp: now + (SHARED_MEDIA_TTL - 300) * 1000 });
+      }
+    });
+  } catch (e) { devWarn('기본 판 영상 주소 받기 실패:', e); }
+  return out;
+}
+
 // ----- 기본 판 올리기 창 (관리자 전용) -----
 const BuiltinUploadModal = ({ count, onDone, onClose }) => {
   const [busy, setBusy] = useState('');
   const fileRef = useRef(null);
   const onFile = async (e) => {
-    const f = e.target.files && e.target.files[0];
+    const picked = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!f) return;
+    if (!picked.length) return;
+    const f = picked.find(x => /\.json$/i.test(x.name) || x.type === 'application/json');
+    if (!f) { safeAlert('기본 판 파일(aac-builtin-boards.json)도 같이 골라 주세요.'); return; }
+    const vidFiles = {};
+    const nfc = (s) => { try { return String(s || '').normalize('NFC'); } catch { return String(s || ''); } };
+    picked.filter(x => x !== f && isVideoFile(x)).forEach(x => { vidFiles[nfc(x.name)] = x; });
     let data = null;
     try { data = JSON.parse(await f.text()); } catch { data = null; }
     const list = (data?.boards || []).filter(b => b && b.id && b.name && Array.isArray(b.cells));
     if (!list.length) { safeAlert('기본 판 파일이 아니에요. 받아 둔 aac-builtin-boards.json 파일을 골라 주세요.'); return; }
+    // 영상이 들어가는 쪽: 고른 영상 파일을 함께 쓰는 잠긴 저장 공간에 올림
+    const vidJobs = [];
+    // 저장 이름은 영어·숫자만 (한글 파일 이름은 저장 공간이 받지 않음)
+    list.forEach(b => (b.pages || []).forEach((pg, pi) => {
+      if (!pg || !pg.videoFile) return;
+      const ext = ((String(pg.videoFile).match(/\.([a-z0-9]{2,4})$/i) || [])[1] || 'mp4').toLowerCase();
+      vidJobs.push({ b, pg, path: `builtin/${String(b.id).replace(/[^a-zA-Z0-9_-]/g, '_')}/page${pi + 1}.${ext}` });
+    }));
+    let vidMissing = 0, vidFail = 0;
+    for (let i = 0; i < vidJobs.length; i++) {
+      const j = vidJobs[i];
+      const vf = vidFiles[nfc(j.pg.videoFile)];
+      if (!vf) { vidMissing++; continue; }
+      setBusy(`영상 ${i + 1}/${vidJobs.length}개 올리는 중`);
+      if (!(await sharedMediaUpload(j.path, vf))) vidFail++;
+    }
+    if (vidJobs.length && vidFail === vidJobs.length - vidMissing && vidFail > 0) {
+      setBusy('');
+      safeAlert('영상을 올리지 못했어요.\nSupabase에 영상 저장 공간을 만드는 SQL을 먼저 실행했는지 확인해 주세요. 이 화면을 캡처해서 Claude에게 보여 주세요.');
+      return;
+    }
+    vidJobs.forEach(j => { j.pg.sharedVideo = j.path; delete j.pg.videoFile; });
     setBusy('올리는 중…');
     let fail = 0;
     for (let i = 0; i < list.length; i++) {
@@ -3623,7 +3691,10 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
     const okIdx = await sharedSet(SHARED_INDEX_KEY, JSON.stringify(index));
     setBusy('');
     if (!okIdx) { safeAlert('판 목록을 저장하지 못했어요. 다시 시도해 주세요.'); return; }
-    safeAlert(`기본 판 ${list.length - fail}개를 올렸어요.` + (fail ? `\n${fail}개는 올라가지 않았어요. 다시 올려 주세요.` : ''));
+    safeAlert(`기본 판 ${list.length - fail}개를 올렸어요.` + (fail ? `\n${fail}개는 올라가지 않았어요. 다시 올려 주세요.` : '')
+      + (vidJobs.length ? `\n영상 ${vidJobs.length - vidMissing - vidFail}개를 올렸어요.` : '')
+      + (vidMissing ? `\n영상 ${vidMissing}개는 고르지 않았어요. 예전에 올린 영상이 있으면 그대로 나와요.` : '')
+      + (vidFail ? `\n영상 ${vidFail}개는 올라가지 않았어요. 다시 올려 주세요.` : ''));
     onDone();
   };
   const removeAll = async () => {
@@ -3650,8 +3721,9 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
         ) : (
           <div className="p-5 space-y-3">
             <p className="text-sm text-stone-600 leading-relaxed">받아 둔 기본 판 파일(aac-builtin-boards.json)을 고르면 잠긴 저장 공간에 올라가요. 로그인한 선생님만 볼 수 있고, 다시 올리면 기본 판이 새 파일 내용으로 바뀌어요.</p>
+            <p className="text-sm text-stone-600 leading-relaxed">영상이 들어가는 판이 있으면, 같은 폴더의 <b>영상 파일도 함께</b> 골라 주세요. (폴더 안 파일을 모두 고르면 돼요)</p>
             <p className="text-sm text-stone-800">지금 올라가 있는 기본 판: <b>{count}개</b></p>
-            <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={onFile} />
+            <input ref={fileRef} type="file" accept="application/json,.json,video/*" multiple className="hidden" onChange={onFile} />
             <div className="flex justify-between gap-2 pt-1">
               <button onClick={removeAll} disabled={!count} className="px-3 py-2 rounded-lg border border-stone-300 text-sm text-red-600 disabled:opacity-40">기본 판 모두 내리기</button>
               <button onClick={() => fileRef.current?.click()} className="px-4 py-2 rounded-lg text-white text-sm font-bold flex items-center gap-1.5" style={{ background: BOARD_PINK }}>
@@ -4515,8 +4587,9 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const videoRef = useRef(null);
   const pageVideoInput = useRef(null);
   const [videoBusy, setVideoBusy] = useState(false);
-  useEffect(() => { setStoryPage(0); setSentence([]); }, [activeId]);
-  useEffect(() => { setSentence([]); }, [storyPage]);
+  const [qOn, setQOn] = useState([]); // 누른 질문 번호들 → 그 질문의 답 칸만 보임
+  useEffect(() => { setStoryPage(0); setSentence([]); setQOn([]); }, [activeId]);
+  useEffect(() => { setSentence([]); setQOn([]); }, [storyPage]);
   const [showImport, setShowImport] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [saying, setSaying] = useState(null);
@@ -4609,11 +4682,11 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (!board || !board.builtin) return;
     if (!board.cells) { safeAlert('판을 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요.'); return; }
     const b = { ...newBoard(board.name), createdAt: Date.now(), cols: board.cols || 4 };
-    b.cells = board.cells.map((c, i) => ({ cardId: null, label: c.label || '', ref: `${board.id}#${i}` }));
+    b.cells = board.cells.map((c, i) => ({ cardId: null, label: c.label || '', ref: `${board.id}#${i}`, ...(c.q !== undefined ? { q: c.q } : {}) }));
     if (board.kind === 'story') {
       b.kind = 'story';
       b.sentence = board.sentence !== false;
-      b.pages = (board.pages || []).map((pg, i) => ({ cardId: null, text: pg.text || '', questions: [...(pg.questions || [])], pageRef: `${board.id}#${i}` }));
+      b.pages = (board.pages || []).map((pg, i) => ({ cardId: null, text: pg.text || '', questions: [...(pg.questions || [])], pageRef: `${board.id}#${i}`, ...(pg.sharedVideo ? { sharedVideo: pg.sharedVideo } : {}) }));
     }
     else if (typeof board.sentence === 'boolean') b.sentence = board.sentence;
     b.hidden = JSON.parse(JSON.stringify(board.hidden || {}));
@@ -4757,7 +4830,21 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, board?.pages]);
+  useEffect(() => {
+    const need = (board?.pages || []).map(pg => pg.sharedVideo).filter(pth => pth && !videoUrls['shared:' + pth]);
+    if (!need.length) return;
+    let cancelled = false;
+    sharedMediaSign(need).then(m => {
+      if (cancelled || !m) return;
+      const add = {}; Object.keys(m).forEach(k => { add['shared:' + k] = m[k]; });
+      setVideoUrls(prev => ({ ...prev, ...add }));
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, board?.pages]);
   const isStory = board?.kind === 'story';
+  // 칸마다 질문 번호(q)가 있는 판: 질문을 누르면 그 질문의 답 칸만 보임 (아무것도 안 누르면 모두 보임)
+  const qGroups = isStory && !!board?.cells?.some(c => c && Number.isInteger(c.q));
   const sentenceOn = !!board && (board.sentence ?? isStory);
   const pages = isStory ? (board.pages || []) : [];
   const pIdx = Math.min(storyPage, Math.max(0, pages.length - 1));
@@ -4787,7 +4874,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       const [bid, idx] = String(page.pageRef).split('#');
       img = builtinMap[bid]?.pages?.[parseInt(idx, 10)]?.image || '';
     }
-    const vurl = page.videoPath ? videoUrls[page.videoPath] : '';
+    const vkey = page.videoPath || (page.sharedVideo ? 'shared:' + page.sharedVideo : '');
+    const vurl = vkey ? videoUrls[vkey] : '';
     const qs = (page.questions || []).filter(q => (q || '').trim());
     const replay = () => { const v = videoRef.current; if (v) { try { v.currentTime = 0; v.play(); } catch {} } };
     return (
@@ -4795,11 +4883,11 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         <div className="grid items-center gap-2" style={{ gridTemplateColumns: '44px minmax(0,1fr) 44px' }}>
           <button onClick={() => setStoryPage(Math.max(0, pIdx - 1))} disabled={pIdx === 0}
             className="h-12 rounded-xl border border-stone-200 bg-white flex items-center justify-center disabled:opacity-30" aria-label="앞 쪽"><ChevronDown className="w-5 h-5 rotate-90" /></button>
-          {page.videoPath ? (
+          {vkey ? (
             <div className="rounded-2xl border-2 border-stone-200 bg-white p-2 flex flex-col items-center justify-center gap-2">
               <div className="relative w-full">
                 {vurl
-                  ? <video key={page.videoPath} ref={videoRef} src={vurl} autoPlay playsInline preload="auto"
+                  ? <video key={vkey} ref={videoRef} src={vurl} autoPlay playsInline preload="auto"
                       onClick={replay} className={`w-full rounded-xl bg-stone-900 object-contain ${large ? 'max-h-[52vh]' : 'max-h-80'}`} />
                   : <div className="w-full aspect-video rounded-xl bg-stone-100 flex items-center justify-center text-sm text-stone-400">영상을 불러오는 중…</div>}
                 {vurl && (
@@ -4825,11 +4913,15 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
             className="h-12 rounded-xl border border-stone-200 bg-white flex items-center justify-center disabled:opacity-30" aria-label="다음 쪽"><ChevronDown className="w-5 h-5 -rotate-90" /></button>
         </div>
         <div className="flex items-center justify-center gap-2 flex-wrap">
-          {qs.map((q, k) => (
-            <button key={k} onClick={() => speakText(q)}
-              className={`rounded-full border-2 bg-white flex items-center gap-1.5 font-bold ${large ? 'px-5 py-2.5 text-lg' : 'px-4 py-1.5 text-sm'}`}
-              style={{ borderColor: BOARD_PINK, color: '#993556' }}><Volume2 className="w-4 h-4" /> {q}</button>
-          ))}
+          {qs.map((q, k) => {
+            const on = qGroups && qOn.includes(k);
+            return (
+              <button key={k} onClick={() => { speakText(q); if (qGroups && mode === 'use') setQOn(prev => prev.includes(k) ? prev.filter(x => x !== k) : [...prev, k]); }}
+                className={`rounded-full border-2 flex items-center gap-1.5 font-bold ${large ? 'px-5 py-2.5 text-lg' : 'px-4 py-1.5 text-sm'}`}
+                style={on ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}
+                aria-pressed={qGroups ? on : undefined}><Volume2 className="w-4 h-4" /> {q}</button>
+            );
+          })}
           <span className="text-xs text-stone-400 ml-1">{pIdx + 1} / {pages.length}쪽</span>
         </div>
         {mode === 'edit' && (
@@ -4924,6 +5016,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       {renderSentenceBar(large)}
       <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${board.cols || 4}, minmax(0, 1fr))` }}>
         {board.cells.map((cell, i) => {
+          if (mode === 'use' && qGroups && qOn.length && Number.isInteger(cell.q) && !qOn.includes(cell.q)) return null;
           const v = cellView(cell, i);
           const empty = !v.image && !v.label;
           // 수업 화면: 숨긴 칸·빈 칸은 자리만 남김 (아이가 누를 것만 보이게)
