@@ -3684,7 +3684,8 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
       safeAlert('올리지 못했어요.\nSupabase에 aac_shared 표를 만드는 SQL을 먼저 실행했는지, 관리자 계정으로 로그인했는지 확인해 주세요.');
       return;
     }
-    const index = list.map(b => ({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, count: b.cells.length, ...(b.kind === 'story' ? { kind: 'story' } : {}) }));
+    // unlisted: 목록에는 안 보이고 다른 판의 '답 칸 그림'으로만 쓰는 판
+    const index = list.map(b => ({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, count: b.cells.length, ...(b.kind === 'story' ? { kind: 'story' } : {}), ...(b.unlisted ? { unlisted: true } : {}) }));
     // 새 파일에 없는 예전 판은 지움
     const ids = new Set(list.map(b => b.id));
     const prev = await sharedGet(SHARED_INDEX_KEY);
@@ -3692,7 +3693,7 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
     const okIdx = await sharedSet(SHARED_INDEX_KEY, JSON.stringify(index));
     setBusy('');
     if (!okIdx) { safeAlert('판 목록을 저장하지 못했어요. 다시 시도해 주세요.'); return; }
-    safeAlert(`기본 판 ${list.length - fail}개를 올렸어요.` + (fail ? `\n${fail}개는 올라가지 않았어요. 다시 올려 주세요.` : '')
+    safeAlert(`기본 판 ${list.filter(b => !b.unlisted).length - fail}개를 올렸어요.` + (fail ? `\n${fail}개는 올라가지 않았어요. 다시 올려 주세요.` : '')
       + (vidJobs.length ? `\n영상 ${vidJobs.length - vidMissing - vidFail}개를 올렸어요.` : '')
       + (vidMissing ? `\n영상 ${vidMissing}개는 고르지 않았어요. 예전에 올린 영상이 있으면 그대로 나와요.` : '')
       + (vidFail ? `\n영상 ${vidFail}개는 올라가지 않았어요. 다시 올려 주세요.` : ''));
@@ -4625,7 +4626,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       setBoards(list);
       setBuiltins(bi);
       setKids(Array.isArray(kidList) ? kidList : []);
-      setActiveId(prev => (prev && (list.some(b => b.id === prev) || bi.some(b => b.id === prev))) ? prev : (list[0]?.id || bi[0]?.id || null));
+      setActiveId(prev => (prev && (list.some(b => b.id === prev) || bi.some(b => b.id === prev && !b.unlisted))) ? prev : (list[0]?.id || bi.find(b => !b.unlisted)?.id || null));
       if (res._error) safeAlert('판을 불러오지 못했어요. 잠시 뒤 새로고침해 주세요.');
       setLoaded(true);
     })();
@@ -4664,7 +4665,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     builtinLoading.current = {};
     const bi = await loadBuiltinIndex();
     setBuiltins(bi);
-    setActiveId(prev => (prev && (boards.some(b => b.id === prev) || bi.some(b => b.id === prev))) ? prev : (boards[0]?.id || bi[0]?.id || null));
+    setActiveId(prev => (prev && (boards.some(b => b.id === prev) || bi.some(b => b.id === prev && !b.unlisted))) ? prev : (boards[0]?.id || bi.find(b => !b.unlisted)?.id || null));
   };
   const builtinMap = useMemo(() => { const m = {}; builtins.forEach(b => { m[b.id] = b; }); return m; }, [builtins]);
   const updateBoard = (fn) => {
@@ -4748,7 +4749,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (vids.length) storageRemove(vids).catch(() => {});
     const rest = boards.filter(b => b.id !== board.id);
     setBoards(rest);
-    setActiveId(rest[0]?.id || builtins[0]?.id || null);
+    setActiveId(rest[0]?.id || builtins.find(b => !b.unlisted)?.id || null);
     setMode('use');
   };
 
@@ -4837,12 +4838,12 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, board?.pages]);
   useEffect(() => {
-    const need = (board?.pages || []).map(pg => pg.sharedVideo).filter(pth => pth && !videoUrls['shared:' + pth]);
+    const need = (board?.pages || []).map(pg => pg.sharedVideo).filter(pth => pth && videoUrls['shared:' + pth] === undefined);
     if (!need.length) return;
     let cancelled = false;
     sharedMediaSign(need).then(m => {
       if (cancelled || !m) return;
-      const add = {}; Object.keys(m).forEach(k => { add['shared:' + k] = m[k]; });
+      const add = {}; need.forEach(k => { add['shared:' + k] = m[k] || ''; }); // '' = 영상 없음 → 그림으로 보여 줌
       setVideoUrls(prev => ({ ...prev, ...add }));
     });
     return () => { cancelled = true; };
@@ -4921,7 +4922,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       const [bid, idx] = String(page.pageRef).split('#');
       img = builtinMap[bid]?.pages?.[parseInt(idx, 10)]?.image || '';
     }
-    const vkey = page.videoPath || (page.sharedVideo ? 'shared:' + page.sharedVideo : '');
+    let vkey = page.videoPath || (page.sharedVideo ? 'shared:' + page.sharedVideo : '');
+    if (vkey && videoUrls[vkey] === '' && img) vkey = ''; // 영상을 못 받으면 그림으로
     const vurl = vkey ? videoUrls[vkey] : '';
     const qs = (page.questions || []).filter(q => (q || '').trim());
     const replay = () => { const v = videoRef.current; if (v) { try { v.currentTime = 0; v.play(); } catch {} } };
@@ -5113,9 +5115,9 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               {boards.filter(b => (b.group || '').trim() === g).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </optgroup>
           ))}
-          {[...new Set(builtins.map(b => b.group || '기본 판'))].map(g => (
+          {[...new Set(builtins.filter(b => !b.unlisted).map(b => b.group || '기본 판'))].map(g => (
             <optgroup key={g} label={g}>
-              {builtins.filter(b => (b.group || '기본 판') === g).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              {builtins.filter(b => !b.unlisted && (b.group || '기본 판') === g).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </optgroup>
           ))}
         </select>
@@ -5270,7 +5272,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       )}
 
       {showBuiltinUpload && (
-        <BuiltinUploadModal count={builtins.length} onClose={() => setShowBuiltinUpload(false)}
+        <BuiltinUploadModal count={builtins.filter(b => !b.unlisted).length} onClose={() => setShowBuiltinUpload(false)}
           onDone={() => { setShowBuiltinUpload(false); reloadBuiltins(); }} />
       )}
 
