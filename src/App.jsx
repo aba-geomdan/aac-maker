@@ -3725,7 +3725,7 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
             <p className="text-sm text-stone-600 leading-relaxed">받아 둔 기본 판 파일(aac-builtin-boards.json)을 고르면 잠긴 저장 공간에 올라가요. 로그인한 선생님만 볼 수 있고, 다시 올리면 기본 판이 새 파일 내용으로 바뀌어요.</p>
             <p className="text-sm text-stone-600 leading-relaxed">영상이 들어가는 판이 있으면, 같은 폴더의 <b>영상 파일도 함께</b> 골라 주세요. (폴더 안 파일을 모두 고르면 돼요)</p>
             <p className="text-sm text-stone-800">지금 올라가 있는 기본 판: <b>{count}개</b></p>
-            <input ref={fileRef} type="file" accept="application/json,.json,video/*" multiple className="hidden" onChange={onFile} />
+            <input ref={fileRef} type="file" accept="application/json,.json,video/*,.mp4,.mov,.m4v,.webm" multiple className="hidden" onChange={onFile} />
             <div className="flex justify-between gap-2 pt-1">
               <button onClick={removeAll} disabled={!count} className="px-3 py-2 rounded-lg border border-stone-300 text-sm text-red-600 disabled:opacity-40">기본 판 모두 내리기</button>
               <button onClick={() => fileRef.current?.click()} className="px-4 py-2 rounded-lg text-white text-sm font-bold flex items-center gap-1.5" style={{ background: BOARD_PINK }}>
