@@ -4664,8 +4664,15 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     return n;
   });
   const [qOn, setQOn] = useState([]); // 누른 질문 번호들 → 그 질문의 답 칸만 보임
-  useEffect(() => { setStoryPage(0); setSentence([]); setQOn([]); }, [activeId]);
-  useEffect(() => { setSentence([]); setQOn([]); }, [storyPage]);
+  // 정답 연습: 쪽마다 정답(page.answer = 낱말 목록)이 있는 이야기 판에서 맞았는지 알려 줌
+  const [practice, setPractice] = useState(() => { try { return localStorage.getItem('aac_practice') === '1'; } catch { return false; } });
+  const [choiceN, setChoiceN] = useState(() => { try { return parseInt(localStorage.getItem('aac_choice_n') || '0', 10) || 0; } catch { return 0; } });
+  const [tries, setTries] = useState({ wrong: [], solved: false });
+  const [score, setScore] = useState({});
+  useEffect(() => { try { localStorage.setItem('aac_practice', practice ? '1' : '0'); } catch {} }, [practice]);
+  useEffect(() => { try { localStorage.setItem('aac_choice_n', String(choiceN)); } catch {} }, [choiceN]);
+  useEffect(() => { setStoryPage(0); setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); setScore({}); }, [activeId]);
+  useEffect(() => { setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); }, [storyPage]);
   const [showImport, setShowImport] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [saying, setSaying] = useState(null);
@@ -4865,7 +4872,17 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     const v = cellView(src[i], i);
     if (!v.label) return;
     if (sentenceOn) setSentence(prev => [...prev, { label: v.label, image: v.image }]);
-    const ok = boardSpeak(v.label, rate);
+    let say = v.label;
+    if (practiceOn && !tries.solved) {
+      if (answerSet.has(v.label)) {
+        say = `${v.label}. 맞아요!`;
+        setScore(prev => (prev[pIdx] === undefined ? { ...prev, [pIdx]: tries.wrong.length === 0 } : prev));
+        setTries(prev => ({ ...prev, solved: true }));
+      } else if (!tries.wrong.includes(i)) {
+        setTries(prev => ({ ...prev, wrong: [...prev.wrong, i] }));
+      }
+    }
+    const ok = boardSpeak(say, rate);
     if (!ok && !speechWarned.current) {
       speechWarned.current = true;
       safeAlert('이 브라우저에서는 소리로 읽기를 쓸 수 없어요.\n크롬이나 사파리 최신 버전에서 열어 주세요.');
@@ -4970,6 +4987,58 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const pages = isStory ? (board.pages || []) : [];
   const pIdx = Math.min(storyPage, Math.max(0, pages.length - 1));
   const page = pages[pIdx] || null;
+  // ----- 정답 연습 -----
+  const pageAnswers = (isStory && mode === 'use' && page && Array.isArray(page.answer)) ? page.answer : null;
+  const hasAnswers = isStory && (board?.pages || []).some(pg => Array.isArray(pg.answer) && pg.answer.length);
+  const practiceOn = !!(practice && pageAnswers && pageAnswers.length);
+  const answerSet = new Set(pageAnswers || []);
+  const flashAnswer = practiceOn && !tries.solved && tries.wrong.length >= 2;
+  // 보기 수: 정답 + 나머지에서 쪽마다 고정된 순서로 몇 개만
+  const shownIdx = useMemo(() => {
+    if (!practiceOn || !choiceN) return null;
+    const cells = useCells || board?.cells || [];
+    const ans = [], rest = [];
+    cells.forEach((c, i) => { const l = cellView(c, i).label; if (!l) return; (answerSet.has(l) ? ans : rest).push(i); });
+    let seed = (pIdx + 1) * 9301 + String(board?.id || '').length * 49297;
+    const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+    const mixed = rest.map(i => [rnd(), i]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+    return new Set([...ans, ...mixed.slice(0, Math.max(0, choiceN - ans.length))]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [practiceOn, choiceN, pIdx, useCells, board?.id, (pageAnswers || []).join('|')]);
+  // 정답 연습 때는 칸 자리를 쪽마다 섞어서 보여 줌 (정답이 늘 같은 자리에 오지 않게)
+  const practiceOrder = useMemo(() => {
+    if (!practiceOn) return null;
+    const n = (useCells || board?.cells || []).length;
+    let seed = (pIdx + 7) * 7919 + String(board?.id || '').length * 104729;
+    const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+    const m = new Map();
+    Array.from({ length: n }, (_, i) => [rnd(), i]).sort((x, y) => x[0] - y[0]).forEach(([, i], k) => m.set(i, k));
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [practiceOn, pIdx, useCells, board?.id]);
+  const scoreN = Object.keys(score).length, scoreOk = Object.values(score).filter(Boolean).length;
+  const renderPractice = (large) => {
+    if (!hasAnswers || mode !== 'use') return null;
+    return (
+      <div className={`flex items-center gap-2 flex-wrap ${large ? 'text-base' : 'text-sm'}`}>
+        <button onClick={() => setPractice(v => !v)} aria-pressed={practice}
+          className="rounded-full border-2 px-3 py-1 font-bold flex items-center gap-1"
+          style={practice ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}>
+          <Check className="w-4 h-4" /> 정답 연습 {practice ? '켜짐' : '꺼짐'}
+        </button>
+        {practice && (
+          <label className="flex items-center gap-1.5 text-stone-500">보기
+            <select value={choiceN} onChange={(e) => setChoiceN(parseInt(e.target.value, 10))} aria-label="보기 수"
+              className="border border-stone-300 rounded-lg px-2 py-1 bg-white text-stone-700">
+              <option value={1}>1개 (정답만)</option><option value={2}>2개</option><option value={3}>3개</option><option value={0}>전체</option>
+            </select>
+          </label>
+        )}
+        {practice && scoreN > 0 && <span className="text-stone-500">한 번에 맞힘 <b className="text-stone-800">{scoreOk}</b> / {scoreN}</span>}
+        {practice && scoreN > 0 && <button onClick={() => { setScore({}); setTries({ wrong: [], solved: false }); setStoryPage(0); }} className="text-xs underline text-stone-500">처음부터</button>}
+      </div>
+    );
+  };
   const speakText = (t) => {
     if (!t) return;
     if (!boardSpeak(t, rate) && !speechWarned.current) {
@@ -5052,6 +5121,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         </div>}
         <div className="flex items-center gap-2">
           <span className="text-xs text-stone-400">{pIdx + 1} / {pages.length}쪽</span>
+          {renderPractice(large)}
           <div className="flex-1" />
           {renderSetPicker(large)}
         </div>
@@ -5149,15 +5219,21 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${board.cols || 4}, minmax(0, 1fr))` }}>
         {(useCells || board.cells).map((cell, i) => {
           if (mode === 'use' && qGroups && qOn.length && Number.isInteger(cell.q) && !qOn.includes(cell.q)) return null;
+          if (shownIdx && !shownIdx.has(i)) return null;
           const v = cellView(cell, i);
+          const isAns = practiceOn && answerSet.has(v.label);
+          const isWrong = practiceOn && tries.wrong.includes(i);
           const empty = !v.image && !v.label;
           // 수업 화면: 숨긴 칸·빈 칸은 자리만 남김 (아이가 누를 것만 보이게)
           if (mode === 'use' && (v.hidden || empty)) return <div key={i} className="aspect-square" aria-hidden="true" />;
           return (
             <button key={i} onClick={() => onCellClick(i)}
               className={`relative aspect-square rounded-2xl border-2 bg-white flex flex-col items-center justify-center p-1.5 transition active:scale-95 ${
-                v.hidden ? 'border-dashed border-stone-300 opacity-40' : empty ? 'border-dashed border-stone-300' : 'border-stone-200'}`}
-              style={saying === i ? { borderColor: BOARD_PINK, boxShadow: `0 0 0 3px ${BOARD_PINK}55` } : undefined}>
+                v.hidden ? 'border-dashed border-stone-300 opacity-40' : empty ? 'border-dashed border-stone-300' : 'border-stone-200'} ${
+                isWrong ? 'opacity-40' : ''} ${isAns && flashAnswer ? 'animate-pulse' : ''}`}
+              style={{ ...(isAns && (tries.solved || flashAnswer) ? { borderColor: '#2E9E5B', boxShadow: '0 0 0 4px #2E9E5B55' }
+                : saying === i ? { borderColor: BOARD_PINK, boxShadow: `0 0 0 3px ${BOARD_PINK}55` } : {}), ...(practiceOrder ? { order: practiceOrder.get(i) } : {}) }}>
+              {isAns && tries.solved && <span className="absolute top-1 right-1 rounded-full text-white text-xs font-bold px-2 py-0.5" style={{ background: '#2E9E5B' }}>맞아요</span>}
               {v.image
                 ? <img src={v.image} alt={v.label} className={`w-full object-contain ${board.showLabel !== false && v.label ? 'h-[72%]' : 'h-full'}`} draggable={false} />
                 : (empty && mode === 'edit' ? <Plus className="w-8 h-8 text-stone-300" /> : null)}
