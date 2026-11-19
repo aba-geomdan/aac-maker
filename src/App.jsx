@@ -3676,7 +3676,8 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
       const b = list[i];
       const ok = await sharedSet(SHARED_BOARD_KEY(b.id), JSON.stringify({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, cells: b.cells,
         ...(b.kind === 'story' ? { kind: 'story', pages: b.pages || [], sentence: b.sentence !== false } : (typeof b.sentence === 'boolean' ? { sentence: b.sentence } : {})),
-        ...(Array.isArray(b.cellSets) && b.cellSets.length ? { cellSets: b.cellSets, cellSetDefault: b.cellSetDefault || 0 } : {}) }));
+        ...(Array.isArray(b.cellSets) && b.cellSets.length ? { cellSets: b.cellSets, cellSetDefault: b.cellSetDefault || 0 } : {}),
+        ...(b.sort ? { sort: true } : {}) }));
       if (!ok) fail++;
     }
     if (fail === list.length) {
@@ -4635,6 +4636,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       if (o && o.kind === 'story') extra = { kind: 'story', pages: o.pages || [], sentence: o.sentence !== false };
       else if (o && typeof o.sentence === 'boolean') extra = { sentence: o.sentence };
       if (o && Array.isArray(o.cellSets) && o.cellSets.length) extra = { ...extra, cellSets: o.cellSets, cellSetDefault: o.cellSetDefault || 0 };
+      if (o && o.sort) extra = { ...extra, sort: true };
     } catch { cells = null; }
     if (!cells) { builtinLoading.current[id] = false; if (r.error) safeAlert('기본 판을 불러오지 못했어요. 잠시 뒤 다시 골라 주세요.'); return; }
     setBuiltins(prev => prev.map(b => b.id === id ? { ...b, cells, ...extra } : b));
@@ -4669,9 +4671,17 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const [choiceN, setChoiceN] = useState(() => { try { return parseInt(localStorage.getItem('aac_choice_n') || '0', 10) || 0; } catch { return 0; } });
   const [tries, setTries] = useState({ wrong: [], solved: false });
   const [score, setScore] = useState({});
+  const [missCount, setMissCount] = useState({}); // 쪽마다 틀린 횟수
+  const [showResult, setShowResult] = useState(false);
+  const [sortCellsBy, setSortCellsBy] = useState({}); // 분류 판: 오늘 할 칸 (판마다)
+  const [sortMany, setSortMany] = useState(() => { try { return localStorage.getItem('aac_sort_many') === '1'; } catch { return false; } });
+  const [picked, setPicked] = useState(false); // 여러 장 함께: 그림을 골랐는지
+  const advanceTimer = useRef(null);
+  useEffect(() => { try { localStorage.setItem('aac_sort_many', sortMany ? '1' : '0'); } catch {} }, [sortMany]);
   useEffect(() => { try { localStorage.setItem('aac_practice', practice ? '1' : '0'); } catch {} }, [practice]);
   useEffect(() => { try { localStorage.setItem('aac_choice_n', String(choiceN)); } catch {} }, [choiceN]);
-  useEffect(() => { setStoryPage(0); setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); setScore({}); }, [activeId]);
+  useEffect(() => { setStoryPage(0); setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); setScore({}); setMissCount({}); setShowResult(false); setPicked(false); }, [activeId]);
+  useEffect(() => () => { if (advanceTimer.current) clearTimeout(advanceTimer.current); }, []);
   useEffect(() => { setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); }, [storyPage]);
   const [showImport, setShowImport] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -4873,13 +4883,26 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (!v.label) return;
     if (sentenceOn) setSentence(prev => [...prev, { label: v.label, image: v.image }]);
     let say = v.label;
-    if (practiceOn && !tries.solved) {
+    if (practiceOn && !tries.solved && !waitPick && !showResult) {
       if (answerSet.has(v.label)) {
         say = `${v.label}. 맞아요!`;
-        setScore(prev => (prev[pIdx] === undefined ? { ...prev, [pIdx]: tries.wrong.length === 0 } : prev));
+        const nextScore = score[pIdx] === undefined ? { ...score, [pIdx]: tries.wrong.length === 0 } : score;
+        setScore(nextScore);
         setTries(prev => ({ ...prev, solved: true }));
-      } else if (!tries.wrong.includes(i)) {
-        setTries(prev => ({ ...prev, wrong: [...prev.wrong, i] }));
+        const left = targetPages.filter(k => nextScore[k] === undefined);
+        if (advanceTimer.current) clearTimeout(advanceTimer.current);
+        if (!left.length) {
+          say += ' 다 했어요!';
+          advanceTimer.current = setTimeout(() => setShowResult(true), 1000);
+        } else if (sortMode && sortMany) {
+          setPicked(false);
+        } else if (sortMode) {
+          const nxt = left.find(k => k > pIdx) ?? left[0];
+          advanceTimer.current = setTimeout(() => setStoryPage(nxt), 1000);
+        }
+      } else {
+        setMissCount(prev => ({ ...prev, [pIdx]: (prev[pIdx] || 0) + 1 }));
+        if (!tries.wrong.includes(i)) setTries(prev => ({ ...prev, wrong: [...prev.wrong, i] }));
       }
     }
     const ok = boardSpeak(say, rate);
@@ -4991,11 +5014,53 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const pageAnswers = (isStory && mode === 'use' && page && Array.isArray(page.answer)) ? page.answer : null;
   const hasAnswers = isStory && (board?.pages || []).some(pg => Array.isArray(pg.answer) && pg.answer.length);
   const practiceOn = !!(practice && pageAnswers && pageAnswers.length);
-  const answerSet = new Set(pageAnswers || []);
-  const flashAnswer = practiceOn && !tries.solved && tries.wrong.length >= 2;
+  // 분류 판(어디에 들어가?): 맞힌 그림이 칸에 쌓이고, 칸 고르기·여러 장 함께를 씀
+  const sortMode = practiceOn && !!board?.sort;
+  const sortLabels = sortMode ? [...new Set((board.cells || []).map((c, i) => cellView(c, i).label).filter(Boolean))] : [];
+  const sortOn = sortMode ? (() => {
+    const saved = sortCellsBy[board.id] ?? (() => { try { const v = JSON.parse(localStorage.getItem('aac_sortcells:' + board.id) || 'null'); return Array.isArray(v) ? v : null; } catch { return null; } })();
+    const ok = (saved || []).filter(l => sortLabels.includes(l));
+    return ok.length >= 2 ? ok : sortLabels;
+  })() : null;
+  const pageAns = (pg) => (Array.isArray(pg?.answer) ? pg.answer : []);
+  // 이번 연습에 들어가는 쪽 (정답 있는 쪽, 분류 판은 고른 칸의 쪽만)
+  const targetPages = (isStory ? pages : []).map((pg, k) => k).filter(k => {
+    const a = pageAns(pages[k]);
+    if (!a.length) return false;
+    return sortOn ? a.some(l => sortOn.includes(l)) : true;
+  });
+  const waitPick = sortMode && sortMany && !picked;
+  const answerSet = new Set((waitPick || showResult) ? [] : (pageAnswers || []));
+  const flashAnswer = practiceOn && !waitPick && !showResult && !tries.solved && tries.wrong.length >= 2;
+  const restartPractice = (first) => {
+    if (advanceTimer.current) clearTimeout(advanceTimer.current);
+    setScore({}); setMissCount({}); setShowResult(false); setPicked(false); setTries({ wrong: [], solved: false });
+    setStoryPage(first ?? targetPages[0] ?? 0);
+  };
+  const toggleSortCell = (label) => {
+    if (!sortOn) return;
+    const next = sortOn.includes(label) ? sortOn.filter(l => l !== label) : sortLabels.filter(l => l === label || sortOn.includes(l));
+    if (next.length < 2) return;
+    setSortCellsBy(prev => ({ ...prev, [board.id]: next }));
+    try { localStorage.setItem('aac_sortcells:' + board.id, JSON.stringify(next)); } catch {}
+    const first = pages.findIndex(pg => pageAns(pg).some(l => next.includes(l)));
+    restartPractice(first < 0 ? 0 : first);
+  };
+  // 분류 판: 지금 쪽이 고른 칸에 없으면 첫 쪽으로
+  useEffect(() => {
+    if (!sortMode || !targetPages.length || targetPages.includes(pIdx)) return;
+    setStoryPage(targetPages.find(k => score[k] === undefined) ?? targetPages[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortMode, pIdx, targetPages.join(',')]);
+  const pageImg = (pg) => {
+    if (!pg) return '';
+    let im = pg.cardId ? cardMap[pg.cardId]?.image : (pg.image || '');
+    if (!im && pg.pageRef) { const [bid, idx] = String(pg.pageRef).split('#'); im = builtinMap[bid]?.pages?.[parseInt(idx, 10)]?.image || ''; }
+    return im || '';
+  };
   // 보기 수: 정답 + 나머지에서 쪽마다 고정된 순서로 몇 개만
   const shownIdx = useMemo(() => {
-    if (!practiceOn || !choiceN) return null;
+    if (!practiceOn || !choiceN || board?.sort) return null;
     const cells = useCells || board?.cells || [];
     const ans = [], rest = [];
     cells.forEach((c, i) => { const l = cellView(c, i).label; if (!l) return; (answerSet.has(l) ? ans : rest).push(i); });
@@ -5007,7 +5072,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   }, [practiceOn, choiceN, pIdx, useCells, board?.id, (pageAnswers || []).join('|')]);
   // 정답 연습 때는 칸 자리를 쪽마다 섞어서 보여 줌 (정답이 늘 같은 자리에 오지 않게)
   const practiceOrder = useMemo(() => {
-    if (!practiceOn) return null;
+    if (!practiceOn || board?.sort) return null;
     const n = (useCells || board?.cells || []).length;
     let seed = (pIdx + 7) * 7919 + String(board?.id || '').length * 104729;
     const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
@@ -5016,9 +5081,11 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [practiceOn, pIdx, useCells, board?.id]);
-  const scoreN = Object.keys(score).length, scoreOk = Object.values(score).filter(Boolean).length;
+  const doneN = targetPages.filter(k => score[k] !== undefined).length;
+  const scoreN = doneN, scoreOk = targetPages.filter(k => score[k] === true).length;
   const renderPractice = (large) => {
     if (!hasAnswers || mode !== 'use') return null;
+    const pct = targetPages.length ? Math.round(doneN / targetPages.length * 100) : 0;
     return (
       <div className={`flex items-center gap-2 flex-wrap ${large ? 'text-base' : 'text-sm'}`}>
         <button onClick={() => setPractice(v => !v)} aria-pressed={practice}
@@ -5026,7 +5093,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           style={practice ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}>
           <Check className="w-4 h-4" /> 정답 연습 {practice ? '켜짐' : '꺼짐'}
         </button>
-        {practice && (
+        {practice && !board?.sort && (
           <label className="flex items-center gap-1.5 text-stone-500">보기
             <select value={choiceN} onChange={(e) => setChoiceN(parseInt(e.target.value, 10))} aria-label="보기 수"
               className="border border-stone-300 rounded-lg px-2 py-1 bg-white text-stone-700">
@@ -5034,8 +5101,96 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
             </select>
           </label>
         )}
+        {practice && targetPages.length > 0 && (
+          <span className="flex items-center gap-1.5" aria-label={`${targetPages.length}장 중 ${doneN}장`}>
+            <span className="block w-20 sm:w-28 h-2 rounded-full bg-stone-200 overflow-hidden"><span className="block h-full transition-all" style={{ width: pct + '%', background: '#2E9E5B' }} /></span>
+            <b className="text-stone-700 whitespace-nowrap">{targetPages.length}장 중 {doneN}장</b>
+          </span>
+        )}
         {practice && scoreN > 0 && <span className="text-stone-500">한 번에 맞힘 <b className="text-stone-800">{scoreOk}</b> / {scoreN}</span>}
-        {practice && scoreN > 0 && <button onClick={() => { setScore({}); setTries({ wrong: [], solved: false }); setStoryPage(0); }} className="text-xs underline text-stone-500">처음부터</button>}
+        {practice && scoreN > 0 && !showResult && doneN >= targetPages.length && <button onClick={() => setShowResult(true)} className="text-xs underline text-stone-500">결과 보기</button>}
+        {practice && scoreN > 0 && <button onClick={() => restartPractice()} className="text-xs underline text-stone-500">처음부터</button>}
+      </div>
+    );
+  };
+  const renderSortSettings = (large) => {
+    if (!sortMode) return null;
+    return (
+      <div className={`flex items-center gap-1.5 flex-wrap ${large ? 'text-base' : 'text-sm'}`}>
+        <span className="text-stone-500 font-bold mr-0.5">칸 고르기</span>
+        {sortLabels.map(l => {
+          const on = sortOn.includes(l);
+          const ci = (board.cells || []).findIndex((c, i) => cellView(c, i).label === l);
+          const im = ci >= 0 ? cellView((useCells || board.cells)[ci] || board.cells[ci], ci).image : '';
+          return (
+            <button key={l} onClick={() => toggleSortCell(l)} aria-pressed={on}
+              className="rounded-full border-2 px-2.5 py-0.5 font-bold flex items-center gap-1"
+              style={on ? { borderColor: BOARD_PINK, background: '#FDEEF2', color: '#2B2326' } : { borderColor: '#E7E1E3', background: '#fff', color: '#8A7E82' }}>
+              {im && <img src={im} alt="" className="w-4 h-4 object-contain" draggable={false} />}{l}
+            </button>
+          );
+        })}
+        <span className="text-stone-500 font-bold ml-2 mr-0.5">카드 보여 주기</span>
+        <span className="inline-flex rounded-full border-2 border-stone-200 overflow-hidden">
+          {[[false, '한 장씩'], [true, '여러 장 함께']].map(([v, l]) => (
+            <button key={l} onClick={() => { setSortMany(v); setPicked(false); setTries({ wrong: [], solved: false }); }} aria-pressed={sortMany === v}
+              className="px-3 py-0.5 font-bold" style={sortMany === v ? { background: BOARD_PINK, color: '#fff' } : { background: '#fff', color: '#8A7E82' }}>{l}</button>
+          ))}
+        </span>
+      </div>
+    );
+  };
+  const renderResult = (large) => {
+    const ok = targetPages.filter(k => score[k] === true).length;
+    return (
+      <div className="rounded-2xl border-2 border-stone-200 bg-white p-4 space-y-3">
+        <div>
+          <p className={`font-bold text-stone-800 ${large ? 'text-2xl' : 'text-xl'}`}>다 했어요! 🎉</p>
+          <p className="text-sm text-stone-500">{targetPages.length}장 중 <b className="text-stone-800">{ok}장</b>을 한 번에 맞혔어요.</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-xs text-stone-500 border-b border-stone-200">
+              <th className="py-1.5 px-2 font-bold">#</th><th className="py-1.5 px-2 font-bold">그림</th><th className="py-1.5 px-2 font-bold">정답</th><th className="py-1.5 px-2 font-bold">결과</th><th className="py-1.5 px-2 font-bold">틀린 횟수</th>
+            </tr></thead>
+            <tbody>
+              {targetPages.map((k, n) => {
+                const pg = pages[k], im = pageImg(pg), good = score[k] === true;
+                return (
+                  <tr key={k} className="border-b border-stone-100 whitespace-nowrap">
+                    <td className="py-1.5 px-2 text-stone-400">{n + 1}</td>
+                    <td className="py-1.5 px-2"><span className="flex items-center gap-2">{im && <img src={im} alt="" className="w-9 h-9 object-contain" draggable={false} />}{pg.text || ''}</span></td>
+                    <td className="py-1.5 px-2">{pageAns(pg).join(', ')}</td>
+                    <td className="py-1.5 px-2"><span className="rounded-full px-2.5 py-0.5 text-xs font-bold" style={good ? { background: '#E6F6EC', color: '#2E9E5B' } : { background: '#FDECEC', color: '#D9534F' }}>{good ? '정반응' : '오반응'}</span></td>
+                    <td className="py-1.5 px-2">{missCount[k] || 0}회</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <button onClick={() => restartPractice()} className="rounded-full px-4 py-1.5 font-bold text-white" style={{ background: BOARD_PINK }}>같은 설정으로 다시 하기</button>
+      </div>
+    );
+  };
+  const renderPool = (large) => {
+    const left = targetPages.filter(k => score[k] === undefined);
+    return (
+      <div className="rounded-2xl border-2 border-stone-200 bg-white p-3 space-y-2">
+        <p className="text-center text-sm text-stone-500">{picked ? '들어갈 칸을 눌러요.' : '그림을 하나 고르고, 들어갈 칸을 눌러요.'}</p>
+        <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${large ? 110 : 84}px, 1fr))` }}>
+          {left.map(k => {
+            const pg = pages[k], im = pageImg(pg), sel = picked && k === pIdx;
+            return (
+              <button key={k} onClick={() => { if (advanceTimer.current) clearTimeout(advanceTimer.current); if (k !== pIdx) setStoryPage(k); else setTries({ wrong: [], solved: false }); setPicked(true); speakText(pg.text || ''); }}
+                className="rounded-xl border-2 bg-white p-1.5 flex flex-col items-center transition"
+                style={sel ? { borderColor: BOARD_PINK, boxShadow: `0 0 0 3px ${BOARD_PINK}55`, transform: 'translateY(-2px)' } : { borderColor: '#E7E1E3' }}>
+                {im ? <img src={im} alt={pg.text || ''} className="w-full aspect-square object-contain" draggable={false} /> : <span className="w-full aspect-square" />}
+                {pg.text && <span className="text-xs font-bold text-stone-700">{pg.text}</span>}
+              </button>
+            );
+          })}
+        </div>
       </div>
     );
   };
@@ -5056,6 +5211,24 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <p>이야기 쪽이 없어요.</p>
           {mode === 'edit' && <button onClick={() => updateBoard(b => ({ ...b, pages: [{ cardId: null, text: '', questions: [...STORY_DEFAULT_QUESTIONS] }] }))}
             className="px-3 py-1.5 rounded-lg border border-stone-300">쪽 더하기</button>}
+        </div>
+      );
+    }
+    if (practice && mode === 'use' && showResult && hasAnswers) {
+      return (
+        <div className="space-y-3">
+          {renderResult(large)}
+          <div className="flex items-center gap-2 flex-wrap">{renderPractice(large)}<div className="flex-1" />{renderSetPicker(large)}</div>
+          {renderSortSettings(large)}
+        </div>
+      );
+    }
+    if (sortMode && sortMany) {
+      return (
+        <div className="space-y-3">
+          {renderPool(large)}
+          <div className="flex items-center gap-2 flex-wrap">{renderPractice(large)}<div className="flex-1" />{renderSetPicker(large)}</div>
+          {renderSortSettings(large)}
         </div>
       );
     }
@@ -5125,6 +5298,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <div className="flex-1" />
           {renderSetPicker(large)}
         </div>
+        {renderSortSettings(large)}
         {mode === 'edit' && (
           <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 space-y-2 text-sm">
             <label className="flex items-center gap-2">이 쪽 문장
@@ -5221,25 +5395,39 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           if (mode === 'use' && qGroups && qOn.length && Number.isInteger(cell.q) && !qOn.includes(cell.q)) return null;
           if (shownIdx && !shownIdx.has(i)) return null;
           const v = cellView(cell, i);
+          if (sortMode && v.label && !sortOn.includes(v.label)) return null;
           const isAns = practiceOn && answerSet.has(v.label);
-          const isWrong = practiceOn && tries.wrong.includes(i);
+          const isWrong = practiceOn && !waitPick && !showResult && tries.wrong.includes(i);
           const empty = !v.image && !v.label;
           // 수업 화면: 숨긴 칸·빈 칸은 자리만 남김 (아이가 누를 것만 보이게)
           if (mode === 'use' && (v.hidden || empty)) return <div key={i} className="aspect-square" aria-hidden="true" />;
           return (
             <button key={i} onClick={() => onCellClick(i)}
-              className={`relative aspect-square rounded-2xl border-2 bg-white flex flex-col items-center justify-center p-1.5 transition active:scale-95 ${
+              className={`relative rounded-2xl border-2 bg-white flex flex-col p-1.5 transition active:scale-95 ${sortMode && v.label ? 'items-start justify-start min-h-[150px]' : 'aspect-square items-center justify-center'} ${
                 v.hidden ? 'border-dashed border-stone-300 opacity-40' : empty ? 'border-dashed border-stone-300' : 'border-stone-200'} ${
                 isWrong ? 'opacity-40' : ''} ${isAns && flashAnswer ? 'animate-pulse' : ''}`}
               style={{ ...(isAns && (tries.solved || flashAnswer) ? { borderColor: '#2E9E5B', boxShadow: '0 0 0 4px #2E9E5B55' }
                 : saying === i ? { borderColor: BOARD_PINK, boxShadow: `0 0 0 3px ${BOARD_PINK}55` } : {}), ...(practiceOrder ? { order: practiceOrder.get(i) } : {}) }}>
-              {isAns && tries.solved && <span className="absolute top-1 right-1 rounded-full text-white text-xs font-bold px-2 py-0.5" style={{ background: '#2E9E5B' }}>맞아요</span>}
+              {isAns && tries.solved && <span className="absolute top-1 right-1 rounded-full text-white text-xs font-bold px-2 py-0.5 z-10" style={{ background: '#2E9E5B' }}>맞아요</span>}
+              {sortMode && v.label ? (() => {
+                const got = targetPages.filter(k => score[k] !== undefined && pageAns(pages[k]).includes(v.label));
+                return (<>
+                  <span className="flex items-center gap-1.5 w-full">
+                    {v.image && <img src={v.image} alt="" className={`object-contain ${large ? 'w-12 h-12' : 'w-9 h-9'}`} draggable={false} />}
+                    <span className={`font-bold text-stone-800 leading-tight text-left ${large ? 'text-lg sm:text-xl' : 'text-sm sm:text-base'}`}>{v.label}</span>
+                  </span>
+                  <span className="grid gap-1 w-full mt-1.5" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${large ? 48 : 36}px, 1fr))` }}>
+                    {got.map(k => { const im = pageImg(pages[k]); return im ? <img key={k} src={im} alt={pages[k].text || ''} className="w-full aspect-square object-contain rounded-md border border-stone-200 bg-white" draggable={false} /> : null; })}
+                  </span>
+                </>);
+              })() : (<>
               {v.image
                 ? <img src={v.image} alt={v.label} className={`w-full object-contain ${board.showLabel !== false && v.label ? 'h-[72%]' : 'h-full'}`} draggable={false} />
                 : (empty && mode === 'edit' ? <Plus className="w-8 h-8 text-stone-300" /> : null)}
               {board.showLabel !== false && v.label && (
                 <span className={`font-bold text-stone-800 leading-tight text-center ${large ? 'text-lg sm:text-2xl' : 'text-sm sm:text-base'}`}>{v.label}</span>
               )}
+              </>)}
               {v.missing && mode === 'edit' && <span className="absolute top-1 left-1 text-[10px] text-red-500">그림 없음</span>}
               {mode === 'hide' && (
                 <span className="absolute top-1 right-1 text-[11px] px-1.5 rounded bg-stone-100 text-stone-600">{v.hidden ? '숨김' : '보임'}</span>
