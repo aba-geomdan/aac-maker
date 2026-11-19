@@ -3677,7 +3677,7 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
       const ok = await sharedSet(SHARED_BOARD_KEY(b.id), JSON.stringify({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, cells: b.cells,
         ...(b.kind === 'story' ? { kind: 'story', pages: b.pages || [], sentence: b.sentence !== false } : (typeof b.sentence === 'boolean' ? { sentence: b.sentence } : {})),
         ...(Array.isArray(b.cellSets) && b.cellSets.length ? { cellSets: b.cellSets, cellSetDefault: b.cellSetDefault || 0 } : {}),
-        ...(b.sort ? { sort: true } : {}) }));
+        ...(b.sort ? { sort: true, ...(Array.isArray(b.sortDefault) ? { sortDefault: b.sortDefault } : {}) } : {}) }));
       if (!ok) fail++;
     }
     if (fail === list.length) {
@@ -4636,7 +4636,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       if (o && o.kind === 'story') extra = { kind: 'story', pages: o.pages || [], sentence: o.sentence !== false };
       else if (o && typeof o.sentence === 'boolean') extra = { sentence: o.sentence };
       if (o && Array.isArray(o.cellSets) && o.cellSets.length) extra = { ...extra, cellSets: o.cellSets, cellSetDefault: o.cellSetDefault || 0 };
-      if (o && o.sort) extra = { ...extra, sort: true };
+      if (o && o.sort) extra = { ...extra, sort: true, ...(Array.isArray(o.sortDefault) ? { sortDefault: o.sortDefault } : {}) };
     } catch { cells = null; }
     if (!cells) { builtinLoading.current[id] = false; if (r.error) safeAlert('기본 판을 불러오지 못했어요. 잠시 뒤 다시 골라 주세요.'); return; }
     setBuiltins(prev => prev.map(b => b.id === id ? { ...b, cells, ...extra } : b));
@@ -5020,7 +5020,10 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const sortOn = sortMode ? (() => {
     const saved = sortCellsBy[board.id] ?? (() => { try { const v = JSON.parse(localStorage.getItem('aac_sortcells:' + board.id) || 'null'); return Array.isArray(v) ? v : null; } catch { return null; } })();
     const ok = (saved || []).filter(l => sortLabels.includes(l));
-    return ok.length >= 2 ? ok : sortLabels;
+    if (ok.length >= 2) return ok;
+    // 처음 열 때: 판에 정해 둔 칸(sortDefault)만, 없으면 전부
+    const def = (Array.isArray(board.sortDefault) ? board.sortDefault : []).filter(l => sortLabels.includes(l));
+    return def.length >= 2 ? def : sortLabels;
   })() : null;
   const pageAns = (pg) => (Array.isArray(pg?.answer) ? pg.answer : []);
   // 이번 연습에 들어가는 쪽 (정답 있는 쪽, 분류 판은 고른 칸의 쪽만)
