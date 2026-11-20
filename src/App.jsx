@@ -4934,6 +4934,16 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   };
 
   const kidName = kidId === 'all' ? '모든 아이' : (kids.find(k => k.id === kidId)?.name || '모든 아이');
+  // 아이별 자주 쓰는 판 (아이 목록에 함께 저장: kid.fav = [판 id])
+  const curKid = kidId === 'all' ? null : kids.find(k => k.id === kidId) || null;
+  const favIds = (curKid && Array.isArray(curKid.fav)) ? curKid.fav : [];
+  const favBoards = favIds.map(id => boards.find(b => b.id === id) || builtins.find(b => b.id === id && !b.unlisted)).filter(Boolean);
+  const isFav = !!(activeId && favIds.includes(activeId));
+  const toggleFav = () => {
+    if (!curKid || !activeId) return;
+    const next = isFav ? favIds.filter(x => x !== activeId) : [...favIds, activeId];
+    saveKids(kids.map(k => k.id === curKid.id ? { ...k, fav: next } : k));
+  };
 
   // ----- 이야기 판: 위쪽 그림·문장·질문 -----
   const myGroups = useMemo(() => {
@@ -5453,6 +5463,13 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         <select value={activeId || ''} onChange={(e) => { setActiveId(e.target.value || null); setMode('use'); }}
           className="border border-stone-300 rounded-lg px-2 py-1.5 text-sm bg-white max-w-[12rem]">
           {boards.length === 0 && builtins.length === 0 && <option value="">판이 없어요</option>}
+          {curKid && (
+            <optgroup label={`⭐ ${curKid.name} 자주 쓰는 판`}>
+              {favBoards.length
+                ? favBoards.map(b => <option key={'fav_' + b.id} value={b.id}>{b.name}</option>)
+                : <option value="" disabled>아직 없어요 — 판을 열고 ☆을 눌러요</option>}
+            </optgroup>
+          )}
           {boards.some(b => !(b.group || '').trim()) && (
             <optgroup label="내 판">
               {boards.filter(b => !(b.group || '').trim()).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
@@ -5475,6 +5492,13 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           {kids.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
           <option value="__add__">+ 아이 추가</option>
         </select>
+        {curKid && board && (
+          <button onClick={toggleFav} aria-pressed={isFav}
+            className="px-2.5 py-1.5 rounded-lg border text-sm font-bold"
+            style={isFav ? { borderColor: '#E0A100', background: '#E0A100', color: '#2B2326' } : { borderColor: '#E0A100', background: '#fff', color: '#2B2326' }}>
+            {isFav ? `★ ${curKid.name} 판에서 빼기` : `☆ ${curKid.name} 판에 넣기`}
+          </button>
+        )}
         {kidId !== 'all' && <button onClick={removeKid} className="text-xs text-stone-500 underline">아이 빼기</button>}
         <div className="flex-1" />
         {board && mode === 'use' && (
