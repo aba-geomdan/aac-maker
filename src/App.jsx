@@ -3751,6 +3751,25 @@ function LibraryModal({ isAdmin, onClose }) {
   );
 }
 
+// 판 고르기 창에 보일 작은 그림 (올릴 때 한 번 만들어 목록에 같이 저장)
+function makeThumb(src, size = 72) {
+  return new Promise((resolve) => {
+    if (!src || !/^data:image\//.test(src)) { resolve(''); return; }
+    const im = new Image();
+    im.onload = () => {
+      try {
+        const c = document.createElement('canvas'); c.width = size; c.height = size;
+        const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, size, size);
+        const s = Math.min(size / im.width, size / im.height);
+        const w = im.width * s, h = im.height * s;
+        g.drawImage(im, (size - w) / 2, (size - h) / 2, w, h);
+        resolve(c.toDataURL('image/jpeg', 0.7));
+      } catch { resolve(''); }
+    };
+    im.onerror = () => resolve('');
+    im.src = src;
+  });
+}
 // ----- 기본 판 올리기 창 (관리자 전용) -----
 const BuiltinUploadModal = ({ count, onDone, onClose }) => {
   const [busy, setBusy] = useState('');
@@ -3807,7 +3826,22 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
       return;
     }
     // unlisted: 목록에는 안 보이고 다른 판의 '답 칸 그림'으로만 쓰는 판
-    const index = list.map(b => ({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, count: b.cells.length, ...(b.kind === 'story' ? { kind: 'story' } : {}), ...(b.unlisted ? { unlisted: true } : {}) }));
+    setBusy('판 그림 만드는 중…');
+    const byId = Object.fromEntries(list.map(b => [b.id, b]));
+    const firstImg = (b) => {
+      if (b.kind === 'story') { const pg = (b.pages || []).find(x => x && x.image && /^data:image/.test(x.image)); if (pg) return pg.image; }
+      for (const c of (b.cells || [])) {
+        if (c && c.image && /^data:image/.test(c.image)) return c.image;
+        if (c && c.ref) { const [rid, ri] = String(c.ref).split('#'); const rc = byId[rid]?.cells?.[parseInt(ri, 10)]; if (rc && rc.image) return rc.image; }
+      }
+      return '';
+    };
+    const thumbs = {};
+    for (const b of list) { if (!b.unlisted) thumbs[b.id] = await makeThumb(firstImg(b)); }
+    const index = list.map(b => ({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, count: b.cells.length, ...(b.kind === 'story' ? { kind: 'story' } : {}), ...(b.unlisted ? { unlisted: true } : {}),
+      ...(thumbs[b.id] ? { thumb: thumbs[b.id] } : {}),
+      ...((b.pages || []).some(pg => Array.isArray(pg?.answer) && pg.answer.length) ? { ans: true } : {}),
+      ...((b.pages || []).some(pg => pg && (pg.sharedVideo || pg.videoFile)) ? { vid: true } : {}) }));
     // 새 파일에 없는 예전 판은 지움
     const ids = new Set(list.map(b => b.id));
     const prev = await sharedGet(SHARED_INDEX_KEY);
@@ -4776,7 +4810,18 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const videoRef = useRef(null);
   const pageVideoInput = useRef(null);
   const [videoBusy, setVideoBusy] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false); // 판 관리 메뉴
+  const [menuOpen, setMenuOpen] = useState(false); // ☰ 메뉴
+  const [showPicker, setShowPicker] = useState(false); // 판 고르기 창
+  const [pickQ, setPickQ] = useState('');
+  const [pickArea, setPickArea] = useState(null);
+  const [showPracSet, setShowPracSet] = useState(false); // 정답 연습 설정 창
+  const [narrow, setNarrow] = useState(() => { try { return window.matchMedia('(max-width: 640px)').matches; } catch { return false; } });
+  useEffect(() => {
+    let mq; try { mq = window.matchMedia('(max-width: 640px)'); } catch { return undefined; }
+    const on = () => setNarrow(mq.matches);
+    try { mq.addEventListener('change', on); } catch { try { mq.addListener(on); } catch {} }
+    return () => { try { mq.removeEventListener('change', on); } catch { try { mq.removeListener(on); } catch {} } };
+  }, []);
   const [showVoice, setShowVoice] = useState(false); // 목소리 고르기 창
   const [showLibrary, setShowLibrary] = useState(false); // 자료실
   // 영상 소리 끄기 (이 기기에서 기억)
@@ -5018,7 +5063,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           advanceTimer.current = setTimeout(() => setShowResult(true), 1000);
         } else if (sortMode && sortMany) {
           setPicked(false);
-        } else if (sortMode) {
+        } else {
           const nxt = left.find(k => k > pIdx) ?? left[0];
           advanceTimer.current = setTimeout(() => setStoryPage(nxt), 1000);
         }
@@ -5219,32 +5264,88 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const doneN = targetPages.filter(k => score[k] !== undefined).length;
   const scoreN = doneN, scoreOk = targetPages.filter(k => score[k] === true).length;
   const renderPractice = (large) => {
-    if (!hasAnswers || mode !== 'use') return null;
+    if (mode !== 'use') return null;
+    const canSet = hasAnswers || !!cellSets;
+    if (!hasAnswers && !canSet) return null;
     const pct = targetPages.length ? Math.round(doneN / targetPages.length * 100) : 0;
     return (
-      <div className={`flex items-center gap-2 flex-wrap ${large ? 'text-base' : 'text-sm'}`}>
-        <button onClick={() => setPractice(v => !v)} aria-pressed={practice}
-          className="rounded-full border-2 px-3 py-1 font-bold flex items-center gap-1"
-          style={practice ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}>
-          <Check className="w-4 h-4" /> 정답 연습 {practice ? '켜짐' : '꺼짐'}
-        </button>
-        {practice && !board?.sort && (
-          <label className="flex items-center gap-1.5 text-stone-500">보기
-            <select value={choiceN} onChange={(e) => setChoiceN(parseInt(e.target.value, 10))} aria-label="보기 수"
-              className="border border-stone-300 rounded-lg px-2 py-1 bg-white text-stone-700">
-              <option value={1}>1개 (정답만)</option><option value={2}>2개</option><option value={3}>3개</option><option value={0}>전체</option>
-            </select>
-          </label>
+      <div className={`flex items-center gap-2 flex-1 min-w-0 ${large ? 'text-base' : 'text-sm'}`}>
+        {hasAnswers && (
+          <button onClick={() => setPractice(v => !v)} aria-pressed={practice}
+            className="rounded-full border-2 px-3 py-1 font-bold flex items-center gap-1 flex-none"
+            style={practice ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}>
+            <Check className="w-4 h-4" /> 정답 연습
+          </button>
         )}
-        {practice && targetPages.length > 0 && (
-          <span className="flex items-center gap-1.5" aria-label={`${targetPages.length}장 중 ${doneN}장`}>
-            <span className="block w-20 sm:w-28 h-2 rounded-full bg-stone-200 overflow-hidden"><span className="block h-full transition-all" style={{ width: pct + '%', background: '#2E9E5B' }} /></span>
+        <span className="flex items-center gap-1.5 flex-1 min-w-0">
+          {hasAnswers && practice && targetPages.length > 0 && (<>
+            <span className="block flex-1 max-w-[14rem] h-2 rounded-full bg-stone-200 overflow-hidden"><span className="block h-full transition-all" style={{ width: pct + '%', background: '#2E9E5B' }} /></span>
             <b className="text-stone-700 whitespace-nowrap">{targetPages.length}장 중 {doneN}장</b>
-          </span>
+          </>)}
+          {hasAnswers && practice && scoreN > 0 && !showResult && doneN >= targetPages.length && <button onClick={() => setShowResult(true)} className="text-xs underline text-stone-500 whitespace-nowrap">결과 보기</button>}
+        </span>
+        {canSet && (
+          <button onClick={() => setShowPracSet(true)} className="rounded-full border border-stone-300 bg-white px-3 py-1 font-bold text-stone-700 flex items-center gap-1 flex-none">
+            <Settings2 className="w-4 h-4" /> 설정
+          </button>
         )}
-        {practice && scoreN > 0 && <span className="text-stone-500">한 번에 맞힘 <b className="text-stone-800">{scoreOk}</b> / {scoreN}</span>}
-        {practice && scoreN > 0 && !showResult && doneN >= targetPages.length && <button onClick={() => setShowResult(true)} className="text-xs underline text-stone-500">결과 보기</button>}
-        {practice && scoreN > 0 && <button onClick={() => restartPractice()} className="text-xs underline text-stone-500">처음부터</button>}
+      </div>
+    );
+  };
+  const renderPracticeSettings = () => {
+    if (!showPracSet || !board) return null;
+    const chip = (on) => (on ? { borderColor: BOARD_PINK, background: '#FDEEF2', color: '#2B2326' } : { borderColor: '#E7E1E3', background: '#fff', color: '#5B5054' });
+    const Row = ({ label, children }) => (
+      <div className="flex items-start gap-3 py-2.5 border-b border-stone-100 flex-wrap">
+        <b className="w-24 flex-none text-sm text-stone-700 pt-1">{label}</b>
+        <div className="flex gap-1.5 flex-wrap flex-1 min-w-0">{children}</div>
+      </div>
+    );
+    return (
+      <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center" onClick={() => setShowPracSet(false)}>
+        <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="정답 연습 설정">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-100">
+            <b className="text-lg text-stone-900">{hasAnswers ? '정답 연습 설정' : '설정'}</b>
+            <button onClick={() => setShowPracSet(false)} className="ml-auto p-1 text-stone-400" aria-label="닫기"><X className="w-5 h-5" /></button>
+          </div>
+          <div className="overflow-auto px-4 pb-4">
+            {hasAnswers && practice && !board.sort && (
+              <Row label="보기 수">
+                {[[1, '1개 (정답만)'], [2, '2개'], [3, '3개'], [0, '전체']].map(([v, l]) => (
+                  <button key={v} onClick={() => setChoiceN(v)} aria-pressed={choiceN === v} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(choiceN === v)}>{l}</button>
+                ))}
+              </Row>
+            )}
+            {sortMode && (
+              <Row label="칸 고르기">
+                {sortLabels.map(l => (
+                  <button key={l} onClick={() => toggleSortCell(l)} aria-pressed={sortOn.includes(l)} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(sortOn.includes(l))}>{l}</button>
+                ))}
+              </Row>
+            )}
+            {sortMode && (
+              <Row label="카드 보여 주기">
+                {[[false, '한 장씩'], [true, '여러 장 함께']].map(([v, l]) => (
+                  <button key={l} onClick={() => { setSortMany(v); setPicked(false); setTries({ wrong: [], solved: false }); }} aria-pressed={sortMany === v} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(sortMany === v)}>{l}</button>
+                ))}
+              </Row>
+            )}
+            {cellSets && (
+              <Row label="답 칸 그림">
+                {cellSets.map((s, i) => (
+                  <button key={i} onClick={() => chooseSet(i)} aria-pressed={setIdx === i} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(setIdx === i)}>{s.name || `그림 ${i + 1}`}</button>
+                ))}
+              </Row>
+            )}
+            {hasAnswers && practice && (
+              <Row label="다시 하기">
+                <button onClick={() => { restartPractice(); setShowPracSet(false); }} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(false)}>처음부터</button>
+                {scoreN > 0 && <span className="text-sm text-stone-500 self-center">한 번에 맞힘 <b className="text-stone-800">{scoreOk}</b> / {scoreN}</span>}
+              </Row>
+            )}
+            {hasAnswers && !practice && <p className="text-sm text-stone-500 pt-3">정답 연습을 켜면 보기 수·처음부터 같은 설정이 더 나와요.</p>}
+          </div>
+        </div>
       </div>
     );
   };
@@ -5353,8 +5454,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       return (
         <div className="space-y-3">
           {renderResult(large)}
-          <div className="flex items-center gap-2 flex-wrap">{renderPractice(large)}<div className="flex-1" />{renderSetPicker(large)}</div>
-          {renderSortSettings(large)}
+          <div className="flex items-center gap-2">{renderPractice(large)}</div>
         </div>
       );
     }
@@ -5362,8 +5462,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       return (
         <div className="space-y-3">
           {renderPool(large)}
-          <div className="flex items-center gap-2 flex-wrap">{renderPractice(large)}<div className="flex-1" />{renderSetPicker(large)}</div>
-          {renderSortSettings(large)}
+          <div className="flex items-center gap-2">{renderPractice(large)}</div>
         </div>
       );
     }
@@ -5428,12 +5527,10 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           })}
         </div>}
         <div className="flex items-center gap-2">
-          <span className="text-xs text-stone-400">{pIdx + 1} / {pages.length}쪽</span>
+          <span className="text-xs text-stone-400 flex-none">{pIdx + 1} / {pages.length}쪽</span>
           {renderPractice(large)}
-          <div className="flex-1" />
-          {renderSetPicker(large)}
+          {mode !== 'use' && <div className="flex-1" />}
         </div>
-        {renderSortSettings(large)}
         {mode === 'edit' && (
           <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 space-y-2 text-sm">
             <label className="flex items-center gap-2">이 쪽 문장
@@ -5524,8 +5621,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (!board.cells) return <div className="py-16 text-center text-stone-500 text-sm">판을 불러오는 중…</div>;
     return (<>
       {renderSentenceBar(large)}
-      {!isStory && cellSets && mode === 'use' && <div className="mb-3">{renderSetPicker(large)}</div>}
-      <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${board.cols || 4}, minmax(0, 1fr))` }}>
+      {!isStory && cellSets && mode === 'use' && <div className="mb-3 flex justify-end">{renderPractice(large)}</div>}
+      <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${narrow ? Math.min(board.cols || 4, 3) : (board.cols || 4)}, minmax(0, 1fr))` }}>
         {(useCells || board.cells).map((cell, i) => {
           if (mode === 'use' && qGroups && qOn.length && Number.isInteger(cell.q) && !qOn.includes(cell.q)) return null;
           if (shownIdx && !shownIdx.has(i)) return null;
@@ -5580,59 +5677,35 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
 
   return (
     <div className="space-y-3">
-      {/* 위 도구 줄 */}
-      <div className="flex flex-wrap items-center gap-2">
-        <select value={activeId || ''} onChange={(e) => { setActiveId(e.target.value || null); setMode('use'); }}
-          className="border border-stone-300 rounded-lg px-2 py-1.5 text-sm bg-white max-w-[12rem]">
-          {boards.length === 0 && builtins.length === 0 && <option value="">판이 없어요</option>}
-          {curKid && (
-            <optgroup label={`⭐ ${curKid.name} 자주 쓰는 판`}>
-              {favBoards.length
-                ? favBoards.map(b => <option key={'fav_' + b.id} value={b.id}>{b.name}</option>)
-                : <option value="" disabled>아직 없어요 — 판을 열고 ☆을 눌러요</option>}
-            </optgroup>
-          )}
-          {boards.some(b => !(b.group || '').trim()) && (
-            <optgroup label="내 판">
-              {boards.filter(b => !(b.group || '').trim()).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </optgroup>
-          )}
-          {myGroups.map(g => (
-            <optgroup key={'my_' + g} label={g}>
-              {boards.filter(b => (b.group || '').trim() === g).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </optgroup>
-          ))}
-          {[...new Set(builtins.filter(b => !b.unlisted).map(b => b.group || '기본 판'))].map(g => (
-            <optgroup key={g} label={g}>
-              {builtins.filter(b => !b.unlisted && (b.group || '기본 판') === g).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </optgroup>
-          ))}
-        </select>
-        <select value={kidId} onChange={(e) => onKidChange(e.target.value)}
-          className="border border-stone-300 rounded-lg px-2 py-1.5 text-sm bg-white max-w-[10rem]">
+      {/* 위 도구 줄: 판 이름 · 아이 · 크게 보기 · ☰ */}
+      <div className="flex items-center gap-2">
+        <button onClick={() => { setPickQ(''); setPickArea(null); setShowPicker(true); }}
+          className="flex-1 min-w-0 flex items-center gap-2 rounded-xl border-2 bg-white pl-1.5 pr-2.5 py-1 text-left" style={{ borderColor: BOARD_PINK }} aria-haspopup="dialog">
+          {(() => { const th = board?.thumb || (board && (board.cells || []).map((c, i) => cellView(c, i).image).find(Boolean)); return th
+            ? <img src={th} alt="" className="w-8 h-8 rounded-md object-contain bg-white flex-none" draggable={false} />
+            : <span className="w-8 h-8 rounded-md flex items-center justify-center flex-none" style={{ background: '#FDEEF2', color: BOARD_PINK }}><FolderOpen className="w-4 h-4" /></span>; })()}
+          <span className="font-bold text-stone-800 truncate flex-1 min-w-0">{board ? board.name : '판 고르기'}</span>
+          <ChevronDown className="w-4 h-4 text-stone-500 flex-none" />
+        </button>
+        <select value={kidId} onChange={(e) => onKidChange(e.target.value)} aria-label="아이"
+          className="flex-none border border-stone-300 rounded-full px-2.5 py-1.5 text-sm font-bold bg-white text-stone-700 max-w-[5.5rem] sm:max-w-[8rem]">
           <option value="all">모든 아이</option>
           {kids.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
           <option value="__add__">+ 아이 추가</option>
         </select>
-        {curKid && board && (
-          <button onClick={toggleFav} aria-pressed={isFav}
-            className="px-2.5 py-1.5 rounded-lg border text-sm font-bold"
-            style={isFav ? { borderColor: '#E0A100', background: '#E0A100', color: '#2B2326' } : { borderColor: '#E0A100', background: '#fff', color: '#2B2326' }}>
-            {isFav ? `★ ${curKid.name} 판에서 빼기` : `☆ ${curKid.name} 판에 넣기`}
-          </button>
-        )}
-        {kidId !== 'all' && <button onClick={removeKid} className="text-xs text-stone-500 underline">아이 빼기</button>}
-        <div className="flex-1" />
         {board && mode === 'use' && (
-          <button onClick={() => { setMode('use'); setBig(true); }} className="px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm flex items-center gap-1"><Maximize2 className="w-4 h-4" /> 크게 보기</button>
+          <button onClick={() => { setMode('use'); setBig(true); }} className="flex-none w-10 h-10 rounded-xl border border-stone-300 bg-white flex items-center justify-center text-stone-700" aria-label="크게 보기" title="크게 보기"><Maximize2 className="w-4 h-4" /></button>
         )}
-        <div className="relative">
-          <button onClick={() => setMenuOpen(o => !o)} aria-expanded={menuOpen}
-            className={`px-2.5 py-1.5 rounded-lg border text-sm flex items-center gap-1 ${menuOpen ? 'bg-stone-100 border-stone-400' : 'border-stone-300'}`}>
-            <Settings2 className="w-4 h-4" /> 판 관리 <ChevronDown className={`w-3.5 h-3.5 transition ${menuOpen ? 'rotate-180' : ''}`} />
+        <div className="relative flex-none">
+          <button onClick={() => setMenuOpen(o => !o)} aria-expanded={menuOpen} aria-label="메뉴" title="메뉴"
+            className={`w-10 h-10 rounded-xl border flex items-center justify-center text-stone-700 ${menuOpen ? 'bg-stone-100 border-stone-400' : 'bg-white border-stone-300'}`}>
+            <Menu className="w-5 h-5" />
           </button>
-          {menuOpen && (
-            <div className="absolute right-0 mt-1 z-30 w-48 rounded-xl border border-stone-200 bg-white shadow-lg p-1 text-sm" onClick={() => setMenuOpen(false)}>
+          {menuOpen && (<>
+            <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
+            <div className="absolute right-0 mt-1 z-30 w-56 rounded-xl border border-stone-200 bg-white shadow-lg p-1 text-sm" onClick={() => setMenuOpen(false)}>
+              {curKid && board && <button onClick={toggleFav} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 font-bold" style={{ color: '#9A6B00' }}>{isFav ? '★' : '☆'} {curKid.name} 자주 쓰는 판{isFav ? '에서 빼기' : '에 넣기'}</button>}
+              {curKid && board && <div className="my-1 border-t border-stone-100" />}
               {board && <button onClick={() => {
                 if (board.builtin) { if (safeConfirm('기본 판은 그대로 두고, 내 판으로 복사해서 고쳐요.\n복사할까요?')) copyBuiltin(); return; }
                 setMode('edit');
@@ -5643,11 +5716,12 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               <div className="my-1 border-t border-stone-100" />
               <button onClick={addBoard} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Plus className="w-4 h-4" /> 새 판</button>
               <button onClick={() => setShowImport(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Upload className="w-4 h-4" /> 칩판 넣기</button>
-              {isAdmin && <button onClick={() => setShowBuiltinUpload(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2" style={{ color: '#993556' }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>}
-              <div className="my-1 border-t border-stone-100" />
               <button onClick={() => setShowLibrary(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><FolderOpen className="w-4 h-4" /> 자료실</button>
+              {kidId !== 'all' && <button onClick={removeKid} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-500"><X className="w-4 h-4" /> 아이 빼기 ({kidName})</button>}
+              {isAdmin && <div className="my-1 border-t border-stone-100" />}
+              {isAdmin && <button onClick={() => setShowBuiltinUpload(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2" style={{ color: '#993556' }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>}
             </div>
-          )}
+          </>)}
         </div>
       </div>
 
@@ -5786,6 +5860,86 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
 
       {showVoice && <VoiceModal rate={rate} setRate={setRate} onClose={() => setShowVoice(false)} />}
       {showLibrary && <LibraryModal isAdmin={isAdmin} onClose={() => setShowLibrary(false)} />}
+      {renderPracticeSettings()}
+      {showPicker && (() => {
+        const AREAS = [
+          { k: 'play', name: '🧸 놀이', groups: ['기본 놀이판 (틈새톡톡)', '놀이 AAC (톡톡 붙이고 조물조물)'] },
+          { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기'] },
+          { k: 'body', name: '🩹 몸 · 아파요', groups: ['아파요 다쳤어요 (칩판)', '아파요 다쳤어요 (그림 보고 말하기)', '신체 부위 공부 (다원쌤)'] },
+          { k: 'feel', name: '😊 기분 · 하는 말', groups: ['기분', '이럴 때 무슨 말 해야 돼?'] },
+          { k: 'verb', name: '🏃 동사', groups: ['만 3세 고빈도 동사', '하고 있어요 · 다 했어요 (이어짐)', '내가 했어요 · 친구에게 해 줬어요 (이어짐)'] },
+          { k: 'story', name: '📖 이야기', groups: ['이야기책', '반대말 동화', '사계절 동화'] },
+          { k: 'think', name: '🧩 생각하기', groups: ['어디에 들어가?', '딱 맞는 짝을 찾아요', '빠진 부분 찾기', '어디에 있어?'] },
+        ];
+        const listed = builtins.filter(b => !b.unlisted);
+        const known = new Set(AREAS.flatMap(a => a.groups));
+        const etc = [...new Set(listed.map(b => b.group || '기본 판'))].filter(g => !known.has(g));
+        const areas = [...(boards.length ? [{ k: 'mine', name: '⭐ 내 판', groups: null }] : []), ...AREAS, ...(etc.length ? [{ k: 'etc', name: '그 밖의 판', groups: etc }] : [])];
+        const areaOf = (b) => (b && !b.builtin ? 'mine' : (areas.find(a => a.groups && a.groups.includes(b?.group || '기본 판'))?.k || 'etc'));
+        const curArea = pickArea || (board ? areaOf(board) : areas[0]?.k);
+        const q = pickQ.trim();
+        const close = () => setShowPicker(false);
+        const choose = (id) => { setActiveId(id); setMode('use'); close(); };
+        const Card = ({ b }) => {
+          const th = b.thumb || (b.builtin ? '' : (b.cells || []).map((c, i) => (c.cardId ? cardMap[c.cardId]?.image : c.image)).find(Boolean));
+          return (
+            <button onClick={() => choose(b.id)} className="flex items-center gap-2 rounded-xl border-2 bg-white p-1.5 text-left min-w-0"
+              style={b.id === activeId ? { borderColor: BOARD_PINK, background: '#FDEEF2' } : { borderColor: '#E7E1E3' }}>
+              {th ? <img src={th} alt="" className="w-11 h-11 rounded-lg object-contain bg-white border border-stone-200 flex-none" draggable={false} />
+                : <span className="w-11 h-11 rounded-lg flex items-center justify-center flex-none border border-stone-200" style={{ background: '#FDEEF2', color: BOARD_PINK }}><FolderOpen className="w-5 h-5" /></span>}
+              <span className="min-w-0">
+                <span className="block text-sm font-bold text-stone-800 leading-snug break-words">{b.name}</span>
+                {(b.ans || b.vid) && <span className="flex gap-1 mt-0.5 flex-wrap">
+                  {b.ans && <span className="text-[11px] font-bold rounded-full px-1.5" style={{ background: '#E6F6EC', color: '#2E9E5B' }}>정답 연습</span>}
+                  {b.vid && <span className="text-[11px] font-bold rounded-full px-1.5" style={{ background: '#E8F0FB', color: '#3D6FB6' }}>영상</span>}
+                </span>}
+              </span>
+            </button>
+          );
+        };
+        const grid = (list) => <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>{list.map(b => <Card key={b.id} b={b} />)}</div>;
+        let body;
+        if (q) {
+          const hits = [...boards, ...listed].filter(b => (b.name || '').includes(q) || (b.group || '').includes(q));
+          body = hits.length ? (<><h4 className="text-xs font-bold text-stone-500 mt-3 mb-1.5">‘{q}’ 찾은 판 {hits.length}개</h4>{grid(hits)}</>) : <p className="text-sm text-stone-400 py-6 text-center">‘{q}’이(가) 들어간 판이 없어요.</p>;
+        } else {
+          const a = areas.find(x => x.k === curArea) || areas[0];
+          body = (<>
+            {curKid && (<>
+              <h4 className="text-xs font-bold mt-3 mb-1.5" style={{ color: '#9A6B00' }}>⭐ {curKid.name} 자주 쓰는 판</h4>
+              {favBoards.length ? grid(favBoards) : <p className="text-sm text-stone-400">아직 없어요. 판을 열고 ☰ 메뉴에서 ☆을 눌러 넣어요.</p>}
+            </>)}
+            <div className="flex gap-1.5 overflow-x-auto py-2.5 mt-1">
+              {areas.map(x => (
+                <button key={x.k} onClick={() => setPickArea(x.k)} aria-pressed={x.k === a?.k}
+                  ref={(el) => { if (el && x.k === a?.k) { try { const bx = el.parentNode; bx.scrollLeft = Math.max(0, el.offsetLeft - bx.offsetLeft - bx.clientWidth / 2 + el.offsetWidth / 2); } catch {} } }}
+                  className="flex-none rounded-full border-2 px-3 py-1 text-sm font-bold whitespace-nowrap"
+                  style={x.k === a?.k ? { borderColor: BOARD_PINK, background: '#FDEEF2', color: '#2B2326' } : { borderColor: '#E7E1E3', background: '#fff', color: '#5B5054' }}>{x.name}</button>
+              ))}
+            </div>
+            {a && a.k === 'mine' && (<>
+              {boards.some(b => !(b.group || '').trim()) && (<><h4 className="text-xs font-bold text-stone-500 mt-2 mb-1.5">내 판</h4>{grid(boards.filter(b => !(b.group || '').trim()))}</>)}
+              {myGroups.map(g => <div key={g}><h4 className="text-xs font-bold text-stone-500 mt-3 mb-1.5">{g}</h4>{grid(boards.filter(b => (b.group || '').trim() === g))}</div>)}
+            </>)}
+            {a && a.groups && a.groups.map(g => { const bs = listed.filter(b => (b.group || '기본 판') === g); return bs.length ? <div key={g}><h4 className="text-xs font-bold text-stone-500 mt-3 mb-1.5">{g} · {bs.length}</h4>{grid(bs)}</div> : null; })}
+          </>);
+        }
+        return (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center" onClick={close}>
+            <div className="bg-white w-full sm:max-w-3xl rounded-t-2xl sm:rounded-2xl shadow-xl h-[88vh] sm:h-auto sm:max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="판 고르기">
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-100">
+                <b className="text-lg text-stone-900">판 고르기</b>
+                <button onClick={close} className="ml-auto p-1 text-stone-400" aria-label="닫기"><X className="w-5 h-5" /></button>
+              </div>
+              <div className="overflow-auto px-4 pb-5 pt-3">
+                <input value={pickQ} onChange={(e) => setPickQ(e.target.value)} type="search" placeholder="판 이름으로 찾기 (예: 아파, 동화, 동사)" aria-label="판 이름으로 찾기"
+                  className="w-full border-2 border-stone-200 rounded-xl px-3 py-2 text-sm bg-stone-50 focus:outline-none focus:border-pink-300" />
+                {body}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {showBuiltinUpload && (
         <BuiltinUploadModal count={builtins.filter(b => !b.unlisted).length} onClose={() => setShowBuiltinUpload(false)}
           onDone={() => { setShowBuiltinUpload(false); reloadBuiltins(); }} />
