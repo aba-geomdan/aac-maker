@@ -6,7 +6,7 @@
  * 무단 복제·배포·재판매·온라인 게시를 엄격히 금지합니다.
  */
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu, Volume2, VolumeX, Printer, Maximize2 } from 'lucide-react';
+import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu, Volume2, VolumeX, Printer, Maximize2, ChevronLeft } from 'lucide-react';
 
 /* ================================================================
    도메인 잠금 (지적재산 보호)
@@ -4804,6 +4804,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const [activeId, setActiveId] = useState(null);
   const [kids, setKids] = useState([]);
   const [kidId, setKidId] = useState('all');
+  const [home, setHome] = useState(true); // 아이별 첫 화면
+  const [homeStep, setHomeStep] = useState('kids'); // kids | favs
   const [mode, setMode] = useState('use'); // use | edit | hide
   const [big, setBig] = useState(false);
   const [pickIndex, setPickIndex] = useState(null);
@@ -5028,6 +5030,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       const k = { id: `kid_${Date.now()}`, name: name.trim() };
       saveKids([...kids, k]);
       setKidId(k.id);
+      setHomeStep('favs');
       return;
     }
     setKidId(v);
@@ -5767,12 +5770,72 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     </>);
   };
 
+  // ----- 아이별 첫 화면: 아이 고르기 → 그 아이 자주 쓰는 판 -----
+  const KID_COLORS = ['#5B8DEF', '#E58FA4', '#3D8B5A', '#E0A100', '#8E6BD1', '#E07A2E', '#2FA4A9', '#C25A86'];
+  const boardThumb = (b) => b?.thumb || (b && !b.builtin ? (b.cells || []).map(c => (c.cardId ? cardMap[c.cardId]?.image : c.image)).find(Boolean) : '') || '';
+  const kidFavs = (k) => (Array.isArray(k?.fav) ? k.fav : []).map(id => boards.find(b => b.id === id) || builtins.find(b => b.id === id && !b.unlisted)).filter(Boolean);
+  const openPicker = () => { setPickQ(''); setPickArea(null); setShowPicker(true); };
+  const renderHome = () => {
+    if (homeStep === 'favs' && curKid) {
+      const fb = kidFavs(curKid);
+      return (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setHomeStep('kids')} className="flex items-center gap-1 text-sm font-bold text-stone-500 px-2 py-1.5 rounded-lg hover:bg-stone-100"><ChevronLeft className="w-4 h-4" /> 아이</button>
+            <b className="text-xl text-stone-900 truncate">{curKid.name}</b>
+          </div>
+          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
+            {fb.map(b => { const th = boardThumb(b); return (
+              <button key={b.id} onClick={() => { setActiveId(b.id); setMode('use'); setHome(false); }}
+                className="rounded-2xl border-2 border-stone-200 bg-white p-2 flex flex-col items-center gap-1.5 text-center hover:border-pink-300 active:scale-[0.98] transition">
+                {th ? <img src={th} alt="" className="w-full aspect-[4/3] object-contain rounded-xl bg-white" draggable={false} />
+                  : <span className="w-full aspect-[4/3] rounded-xl flex items-center justify-center" style={{ background: '#FDEEF2', color: BOARD_PINK }}><FolderOpen className="w-8 h-8" /></span>}
+                <b className="text-sm text-stone-800 leading-snug break-keep">{b.name}</b>
+              </button>
+            ); })}
+            <button onClick={openPicker} className="rounded-2xl border-2 border-dashed border-stone-300 bg-white p-2 flex flex-col items-center justify-center gap-1.5 text-stone-500 min-h-[150px] hover:border-pink-300">
+              <Search className="w-6 h-6" /><b className="text-sm">다른 판 찾기</b>
+            </button>
+          </div>
+          {!fb.length && <p className="text-sm text-stone-500 text-center">아직 {curKid.name} 자주 쓰는 판이 없어요. ‘다른 판 찾기’에서 판을 열고 ☰ 메뉴의 ☆을 눌러 넣어요.</p>}
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-3">
+        <b className="block text-xl text-stone-900">누구랑 수업해요?</b>
+        <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
+          {kids.map((k, i) => (
+            <button key={k.id} onClick={() => { setKidId(k.id); setHomeStep('favs'); }}
+              className="rounded-2xl border-2 border-stone-200 bg-white py-4 px-2 flex flex-col items-center gap-1.5 hover:border-pink-300 active:scale-[0.98] transition">
+              <span className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-black text-white" style={{ background: KID_COLORS[i % KID_COLORS.length] }}>{(k.name || '?').slice(0, 1)}</span>
+              <b className="text-lg text-stone-800 truncate max-w-full">{k.name}</b>
+              <span className="text-xs text-stone-500">자주 쓰는 판 {kidFavs(k).length}개</span>
+            </button>
+          ))}
+          <button onClick={() => onKidChange('__add__')}
+            className="rounded-2xl border-2 border-dashed border-stone-300 bg-white py-4 px-2 flex flex-col items-center justify-center gap-1.5 text-stone-500 hover:border-pink-300">
+            <span className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-black bg-stone-100">+</span>
+            <b className="text-base">아이 추가</b>
+          </button>
+          <button onClick={() => { setKidId('all'); setHome(false); if (!activeId) openPicker(); }}
+            className="rounded-2xl border-2 border-stone-200 bg-white py-4 px-2 flex flex-col items-center justify-center gap-1.5 text-stone-600 hover:border-pink-300">
+            <span className="w-16 h-16 rounded-full flex items-center justify-center bg-stone-100"><Search className="w-7 h-7" /></span>
+            <b className="text-base">모든 아이</b>
+            <span className="text-xs text-stone-500">전체 판에서 고르기</span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   if (!loaded) {
     return <div className="py-16 text-center text-stone-500 text-sm">판을 불러오는 중…</div>;
   }
 
   return (
     <div className="space-y-3">
+      {home && mode === 'use' ? renderHome() : (<>
       {/* 위 도구 줄: 판 이름 · 아이 · 크게 보기 · ☰ */}
       <div className="flex items-center gap-2">
         <button onClick={() => { setPickQ(''); setPickArea(null); setShowPicker(true); }}
@@ -5783,12 +5846,10 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <span className="font-bold text-stone-800 truncate flex-1 min-w-0">{board ? board.name : '판 고르기'}</span>
           <ChevronDown className="w-4 h-4 text-stone-500 flex-none" />
         </button>
-        <select value={kidId} onChange={(e) => onKidChange(e.target.value)} aria-label="아이"
-          className="flex-none border border-stone-300 rounded-full px-2.5 py-1.5 text-sm font-bold bg-white text-stone-700 max-w-[5.5rem] sm:max-w-[8rem]">
-          <option value="all">모든 아이</option>
-          {kids.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
-          <option value="__add__">+ 아이 추가</option>
-        </select>
+        <button onClick={() => { setMode('use'); setHomeStep(curKid ? 'favs' : 'kids'); setHome(true); }} aria-label="아이 고르기"
+          className="flex-none border border-stone-300 rounded-full px-2.5 py-1.5 text-sm font-bold bg-white text-stone-700 max-w-[6rem] sm:max-w-[9rem] truncate">
+          {curKid ? curKid.name : '모든 아이'} ▾
+        </button>
         {board && mode === 'use' && (
           <button onClick={() => { setMode('use'); setBig(true); }} className="flex-none w-10 h-10 rounded-xl border border-stone-300 bg-white flex items-center justify-center text-stone-700" aria-label="크게 보기" title="크게 보기"><Maximize2 className="w-4 h-4" /></button>
         )}
@@ -5919,6 +5980,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           {renderGrid(false)}
         </>
       )}
+      </>)}
 
       {big && board && (
         <div className="fixed inset-0 z-50 bg-white p-3 sm:p-6 overflow-auto">
@@ -5975,7 +6037,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         const curArea = pickArea || (board ? areaOf(board) : areas[0]?.k);
         const q = pickQ.trim();
         const close = () => setShowPicker(false);
-        const choose = (id) => { setActiveId(id); setMode('use'); close(); };
+        const choose = (id) => { setActiveId(id); setMode('use'); setHome(false); close(); };
         const Card = ({ b }) => {
           const th = b.thumb || (b.builtin ? '' : (b.cells || []).map((c, i) => (c.cardId ? cardMap[c.cardId]?.image : c.image)).find(Boolean));
           return (
