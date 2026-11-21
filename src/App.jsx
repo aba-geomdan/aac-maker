@@ -3817,7 +3817,9 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
       const ok = await sharedSet(SHARED_BOARD_KEY(b.id), JSON.stringify({ id: b.id, name: b.name, group: b.group || '기본 판', cols: b.cols || 4, cells: b.cells,
         ...(b.kind === 'story' ? { kind: 'story', pages: b.pages || [], sentence: b.sentence !== false } : (typeof b.sentence === 'boolean' ? { sentence: b.sentence } : {})),
         ...(Array.isArray(b.cellSets) && b.cellSets.length ? { cellSets: b.cellSets, cellSetDefault: b.cellSetDefault || 0 } : {}),
-        ...(b.sort ? { sort: true, ...(Array.isArray(b.sortDefault) ? { sortDefault: b.sortDefault } : {}) } : {}) }));
+        ...(b.sort ? { sort: true, ...(Array.isArray(b.sortDefault) ? { sortDefault: b.sortDefault } : {}) } : {}),
+        ...(b.kinds ? { kinds: b.kinds } : {}),
+        ...(b.frame ? { frame: b.frame, frameFixed: b.frameFixed || {}, frameWho: b.frameWho || [] } : {}) }));
       if (!ok) fail++;
     }
     if (fail === list.length) {
@@ -4792,6 +4794,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       else if (o && typeof o.sentence === 'boolean') extra = { sentence: o.sentence };
       if (o && Array.isArray(o.cellSets) && o.cellSets.length) extra = { ...extra, cellSets: o.cellSets, cellSetDefault: o.cellSetDefault || 0 };
       if (o && o.sort) extra = { ...extra, sort: true, ...(Array.isArray(o.sortDefault) ? { sortDefault: o.sortDefault } : {}) };
+      if (o && o.kinds) extra = { ...extra, kinds: o.kinds };
+      if (o && o.frame) extra = { ...extra, frame: o.frame, frameFixed: o.frameFixed || {}, frameWho: o.frameWho || [] };
     } catch { cells = null; }
     if (!cells) { builtinLoading.current[id] = false; if (r.error) safeAlert('기본 판을 불러오지 못했어요. 잠시 뒤 다시 골라 주세요.'); return; }
     setBuiltins(prev => prev.map(b => b.id === id ? { ...b, cells, ...extra } : b));
@@ -4838,6 +4842,9 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const [choiceN, setChoiceN] = useState(() => { try { return parseInt(localStorage.getItem('aac_choice_n') || '0', 10) || 0; } catch { return 0; } });
   const [tries, setTries] = useState({ wrong: [], solved: false });
   const [score, setScore] = useState({});
+  const [frameBy, setFrameBy] = useState({}); // 답하는 방법(낱말 0 / 문장 2칸 / 3칸), 판마다
+  const [frameFill, setFrameFill] = useState([]); // 문장 틀에 채운 칸
+  const [frameMsg, setFrameMsg] = useState('');
   const [missCount, setMissCount] = useState({}); // 쪽마다 틀린 횟수
   const [showResult, setShowResult] = useState(false);
   const [sortCellsBy, setSortCellsBy] = useState({}); // 분류 판: 오늘 할 칸 (판마다)
@@ -4849,7 +4856,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   useEffect(() => { try { localStorage.setItem('aac_choice_n', String(choiceN)); } catch {} }, [choiceN]);
   useEffect(() => { setStoryPage(0); setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); setScore({}); setMissCount({}); setShowResult(false); setPicked(false); }, [activeId]);
   useEffect(() => () => { if (advanceTimer.current) clearTimeout(advanceTimer.current); }, []);
-  useEffect(() => { setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); }, [storyPage]);
+  useEffect(() => { setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); setFrameFill([]); setFrameMsg(''); }, [storyPage]);
   const [showImport, setShowImport] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [saying, setSaying] = useState(null);
@@ -5033,6 +5040,33 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     setKidId('all');
   };
 
+  // 문장 틀에 칸 넣기 (맞는 색 → 맞는 낱말 → 다 채우면 문장을 읽고 다음 그림으로)
+  const frameTap = (label, image, i) => {
+    const k = kindOf(label);
+    if (!nextKind) { boardSpeak(label, rate); return; }
+    if (k !== nextKind) { boardSpeak(label, rate); setFrameMsg(`${KIND_NAME[nextKind]} 칸(색이 같은 칸)을 찾아봐요`); return; }
+    const tg = slotTarget(k);
+    if (tg && !tg.includes(label)) {
+      boardSpeak(label, rate); setFrameMsg('다시 해 볼까요?');
+      setMissCount(prev => ({ ...prev, [pIdx]: (prev[pIdx] || 0) + 1 }));
+      if (i !== undefined && !tries.wrong.includes(i)) setTries(prev => ({ ...prev, wrong: [...prev.wrong, i] }));
+      return;
+    }
+    const fill = [...frameFill, { label, image, kind: k }];
+    setFrameFill(fill); setTries({ wrong: [], solved: false }); setFrameMsg('');
+    if (fill.length < frameSlots.length) { boardSpeak(label, rate); return; }
+    const s = fill.map(f => f.label).join(' ');
+    let say = `${s}. 맞아요!`;
+    const nextScore = score[pIdx] === undefined ? { ...score, [pIdx]: !(missCount[pIdx] > 0) } : score;
+    setScore(nextScore);
+    setTries({ wrong: [], solved: true });
+    setFrameMsg(`“${s}” 맞아요!`);
+    const left = targetPages.filter(x => nextScore[x] === undefined);
+    if (advanceTimer.current) clearTimeout(advanceTimer.current);
+    if (!left.length) { say += ' 다 했어요!'; advanceTimer.current = setTimeout(() => setShowResult(true), 1800); }
+    else { const nxt = left.find(x => x > pIdx) ?? left[0]; advanceTimer.current = setTimeout(() => setStoryPage(nxt), 1800); }
+    boardSpeak(say, rate);
+  };
   const onCellClick = (i) => {
     if (!board) return;
     if (mode === 'edit') { setPickIndex(i); return; }
@@ -5048,6 +5082,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (!src[i]) return;
     const v = cellView(src[i], i);
     if (!v.label) return;
+    if (frameSlots && !tries.solved && !showResult) { frameTap(v.label, v.image, i); return; }
     if (sentenceOn) setSentence(prev => [...prev, { label: v.label, image: v.image }]);
     let say = v.label;
     if (practiceOn && !tries.solved && !waitPick && !showResult) {
@@ -5210,7 +5245,27 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     return sortOn ? a.some(l => sortOn.includes(l)) : true;
   });
   const waitPick = sortMode && sortMany && !picked;
-  const answerSet = new Set((waitPick || showResult) ? [] : (pageAnswers || []));
+  // ----- 문장 틀: 칸 색(kinds)과 2칸·3칸 문장 -----
+  const KIND_COLOR = { who: '#E8A800', what: '#E07A2E', pos: '#3D6FB6', do: '#3D8B5A', ask: '#C25A86' };
+  const KIND_NAME = { who: '누가', what: board?.frame && Object.values(board.frame).some(s => s.includes('pos')) ? '무엇' : '어디가', pos: '어디', do: '어때요', ask: '부탁' };
+  const kindOf = (label) => ((board?.frameWho || []).some(w => w.label === label) ? 'who' : (board?.kinds ? board.kinds[label] : undefined));
+  const frameN = (() => {
+    if (!board?.frame) return 0;
+    const v = frameBy[board.id] ?? (() => { try { return parseInt(localStorage.getItem('aac_frame:' + board.id) || '0', 10) || 0; } catch { return 0; } })();
+    return board.frame[v] ? v : 0;
+  })();
+  const setFrameN = (v) => { if (!board) return; setFrameBy(prev => ({ ...prev, [board.id]: v })); try { localStorage.setItem('aac_frame:' + board.id, String(v)); } catch {} setFrameFill([]); setFrameMsg(''); setTries({ wrong: [], solved: false }); };
+  const frameSlots = (practiceOn && !board?.sort && frameN && board?.frame?.[frameN]) ? board.frame[frameN] : null;
+  const nextKind = frameSlots && frameFill.length < frameSlots.length ? frameSlots[frameFill.length] : null;
+  const slotTarget = (k) => {
+    const a = pageAnswers || [];
+    if (a.length && kindOf(a[0]) === k) return a;
+    const pa = page?.slotAns?.[k];
+    if (pa) return Array.isArray(pa) ? pa : [pa];
+    const fx = board?.frameFixed?.[k];
+    return fx ? [fx] : null; // null = 그 색 칸이면 무엇이든
+  };
+  const answerSet = new Set((waitPick || showResult) ? [] : (frameSlots ? (nextKind ? (slotTarget(nextKind) || []) : []) : (pageAnswers || [])));
   const flashAnswer = practiceOn && !waitPick && !showResult && !tries.solved && tries.wrong.length >= 2;
   const restartPractice = (first) => {
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
@@ -5313,6 +5368,13 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               <Row label="보기 수">
                 {[[1, '1개 (정답만)'], [2, '2개'], [3, '3개'], [0, '전체']].map(([v, l]) => (
                   <button key={v} onClick={() => setChoiceN(v)} aria-pressed={choiceN === v} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(choiceN === v)}>{l}</button>
+                ))}
+              </Row>
+            )}
+            {hasAnswers && practice && board.frame && (
+              <Row label="답하는 방법">
+                {[[0, '낱말로'], ...[2, 3].filter(n => board.frame[n]).map(n => [n, `문장으로 (${n}칸)`])].map(([v, l]) => (
+                  <button key={v} onClick={() => setFrameN(v)} aria-pressed={frameN === v} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(frameN === v)}>{l}</button>
                 ))}
               </Row>
             )}
@@ -5616,19 +5678,54 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     );
   };
 
+  const renderFrameBar = (large) => {
+    if (!frameSlots) return null;
+    return (
+      <div className="mb-3 space-y-1.5">
+        <div className="flex items-stretch gap-2 flex-wrap rounded-2xl border-2 border-dashed border-stone-200 p-2">
+          {frameSlots.map((k, j) => {
+            const f = frameFill[j], col = KIND_COLOR[k], waiting = !f && k !== nextKind;
+            return (
+              <div key={j} className={`flex-1 min-w-[110px] rounded-xl border-[3px] px-2 py-1.5 flex items-center gap-2 ${large ? 'min-h-[84px]' : 'min-h-[64px]'}`}
+                style={{ borderColor: col, borderStyle: waiting ? 'dashed' : 'solid', background: waiting ? '#fff' : col + '1F', opacity: waiting ? 0.55 : 1 }}>
+                <span className="rounded-full px-2 py-0.5 text-xs font-black text-white flex-none" style={{ background: col }}>{KIND_NAME[k]}</span>
+                {f ? (<>
+                  {f.image && <img src={f.image} alt="" className={`object-contain rounded-md bg-white ${large ? 'w-14 h-14' : 'w-11 h-11'}`} draggable={false} />}
+                  <b className={`text-stone-800 ${large ? 'text-xl' : 'text-lg'}`}>{f.label}</b>
+                </>) : <span className="text-sm text-stone-400">{k === nextKind ? '여기에 넣어요' : ''}</span>}
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-center text-sm font-bold min-h-[20px]" style={{ color: '#2E9E5B' }}>{frameMsg}</p>
+      </div>
+    );
+  };
   const renderGrid = (large) => {
     if (!board) return null;
     if (!board.cells) return <div className="py-16 text-center text-stone-500 text-sm">판을 불러오는 중…</div>;
+    const whoCells = frameSlots && frameSlots.includes('who') ? (board.frameWho || []) : [];
     return (<>
-      {renderSentenceBar(large)}
+      {frameSlots ? renderFrameBar(large) : renderSentenceBar(large)}
       {!isStory && cellSets && mode === 'use' && <div className="mb-3 flex justify-end">{renderPractice(large)}</div>}
       <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${narrow ? Math.min(board.cols || 4, 3) : (board.cols || 4)}, minmax(0, 1fr))` }}>
+        {whoCells.map((c, j) => (
+          <button key={'who' + j} onClick={() => frameTap(c.label, c.image)}
+            className="relative rounded-2xl border-[3px] bg-white flex flex-col p-1.5 pt-2.5 aspect-square items-center justify-center overflow-hidden transition active:scale-95"
+            style={{ borderColor: KIND_COLOR.who, opacity: nextKind && nextKind !== 'who' ? 0.35 : 1 }}>
+            <span className="absolute left-0 right-0 top-0 h-1.5" style={{ background: KIND_COLOR.who }} />
+            {c.image && <img src={c.image} alt={c.label} className="w-full h-[72%] object-contain" draggable={false} />}
+            <span className={`font-bold text-stone-800 leading-tight text-center ${large ? 'text-lg sm:text-2xl' : 'text-sm sm:text-base'}`}>{c.label}</span>
+          </button>
+        ))}
         {(useCells || board.cells).map((cell, i) => {
           if (mode === 'use' && qGroups && qOn.length && Number.isInteger(cell.q) && !qOn.includes(cell.q)) return null;
           if (shownIdx && !shownIdx.has(i)) return null;
           const v = cellView(cell, i);
           if (sortMode && v.label && !sortOn.includes(v.label)) return null;
           const isAns = practiceOn && answerSet.has(v.label);
+          const kc = mode === 'use' && v.label ? KIND_COLOR[kindOf(v.label)] : null;
+          const frameDim = !!(frameSlots && nextKind && kindOf(v.label) !== nextKind);
           const isWrong = practiceOn && !waitPick && !showResult && tries.wrong.includes(i);
           const empty = !v.image && !v.label;
           // 수업 화면: 숨긴 칸·빈 칸은 자리만 남김 (아이가 누를 것만 보이게)
@@ -5637,9 +5734,10 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
             <button key={i} onClick={() => onCellClick(i)}
               className={`relative rounded-2xl border-2 bg-white flex flex-col p-1.5 transition active:scale-95 ${sortMode && v.label ? 'items-start justify-start min-h-[150px]' : 'aspect-square items-center justify-center'} ${
                 v.hidden ? 'border-dashed border-stone-300 opacity-40' : empty ? 'border-dashed border-stone-300' : 'border-stone-200'} ${
-                isWrong ? 'opacity-40' : ''} ${isAns && flashAnswer ? 'animate-pulse' : ''}`}
-              style={{ ...(isAns && (tries.solved || flashAnswer) ? { borderColor: '#2E9E5B', boxShadow: '0 0 0 4px #2E9E5B55' }
+                isWrong || frameDim ? 'opacity-40' : ''} ${isAns && flashAnswer ? 'animate-pulse' : ''} ${kc ? 'overflow-hidden pt-2.5' : ''}`}
+              style={{ ...(kc ? { borderColor: kc, borderWidth: 3 } : {}), ...(isAns && (tries.solved || flashAnswer) ? { borderColor: '#2E9E5B', boxShadow: '0 0 0 4px #2E9E5B55' }
                 : saying === i ? { borderColor: BOARD_PINK, boxShadow: `0 0 0 3px ${BOARD_PINK}55` } : {}), ...(practiceOrder ? { order: practiceOrder.get(i) } : {}) }}>
+              {kc && <span className="absolute left-0 right-0 top-0 h-1.5" style={{ background: kc }} />}
               {isAns && tries.solved && <span className="absolute top-1 right-1 rounded-full text-white text-xs font-bold px-2 py-0.5 z-10" style={{ background: '#2E9E5B' }}>맞아요</span>}
               {sortMode && v.label ? (() => {
                 const got = targetPages.filter(k => score[k] !== undefined && pageAns(pages[k]).includes(v.label));
