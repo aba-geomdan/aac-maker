@@ -3952,7 +3952,7 @@ const VoiceModal = ({ rate, setRate, onClose }) => {
                   <label key={v.name} className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer ${cur === v.name ? 'bg-pink-50' : 'border-stone-200'}`}
                     style={cur === v.name ? { borderColor: BOARD_PINK } : undefined}>
                     <input type="radio" name="aacvoice" checked={cur === v.name} onChange={() => { setVoice(v.name); setTimeout(sample, 50); }} />
-                    <span className="flex-1">{v.name.replace(/^Microsoft\s*/i, '').replace(/\s*-\s*Korean.*$/i, '').replace(/Online \(Natural\)/i, '(자연스러운 목소리)')}</span>
+                    <span className="flex-1">{String(v.name || '한국어 목소리').replace(/^Microsoft\s*/i, '').replace(/\s*-\s*Korean.*$/i, '').replace(/Online \(Natural\)/i, '(자연스러운 목소리)')}</span>
                     {!v.localService && <span className="text-[11px] text-stone-400">인터넷 필요</span>}
                   </label>
                 ))}
@@ -5457,7 +5457,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
                 return (
                   <tr key={k} className="border-b border-stone-100 whitespace-nowrap">
                     <td className="py-1.5 px-2 text-stone-400">{n + 1}</td>
-                    <td className="py-1.5 px-2"><span className="flex items-center gap-2">{im && <img src={im} alt="" className="w-9 h-9 object-contain" draggable={false} />}{pg.text || ''}</span></td>
+                    <td className="py-1.5 px-2 whitespace-normal min-w-[9rem]"><span className="inline-flex items-center gap-2">{im && <img src={im} alt="" className="w-9 h-9 object-contain flex-none" draggable={false} />}<span className="break-keep">{pg.text || ''}</span></span></td>
                     <td className="py-1.5 px-2">{pageAns(pg).join(', ')}</td>
                     <td className="py-1.5 px-2"><span className="rounded-full px-2.5 py-0.5 text-xs font-bold" style={good ? { background: '#E6F6EC', color: '#2E9E5B' } : { background: '#FDECEC', color: '#D9534F' }}>{good ? '정반응' : '오반응'}</span></td>
                     <td className="py-1.5 px-2">{missCount[k] || 0}회</td>
@@ -5682,17 +5682,17 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (!frameSlots) return null;
     return (
       <div className="mb-3 space-y-1.5">
-        <div className="flex items-stretch gap-2 flex-wrap rounded-2xl border-2 border-dashed border-stone-200 p-2">
+        <div className="flex items-stretch gap-1.5 sm:gap-2 rounded-2xl border-2 border-dashed border-stone-200 p-1.5 sm:p-2">
           {frameSlots.map((k, j) => {
             const f = frameFill[j], col = KIND_COLOR[k], waiting = !f && k !== nextKind;
             return (
-              <div key={j} className={`flex-1 min-w-[110px] rounded-xl border-[3px] px-2 py-1.5 flex items-center gap-2 ${large ? 'min-h-[84px]' : 'min-h-[64px]'}`}
+              <div key={j} className={`flex-1 min-w-0 rounded-xl border-[3px] px-1.5 sm:px-2 py-1.5 flex flex-col sm:flex-row items-center sm:items-center gap-1 sm:gap-2 text-center sm:text-left ${large ? 'min-h-[84px]' : 'min-h-[64px]'}`}
                 style={{ borderColor: col, borderStyle: waiting ? 'dashed' : 'solid', background: waiting ? '#fff' : col + '1F', opacity: waiting ? 0.55 : 1 }}>
                 <span className="rounded-full px-2 py-0.5 text-xs font-black text-white flex-none" style={{ background: col }}>{KIND_NAME[k]}</span>
                 {f ? (<>
-                  {f.image && <img src={f.image} alt="" className={`object-contain rounded-md bg-white ${large ? 'w-14 h-14' : 'w-11 h-11'}`} draggable={false} />}
-                  <b className={`text-stone-800 ${large ? 'text-xl' : 'text-lg'}`}>{f.label}</b>
-                </>) : <span className="text-sm text-stone-400">{k === nextKind ? '여기에 넣어요' : ''}</span>}
+                  {f.image && <img src={f.image} alt="" className={`object-contain rounded-md bg-white flex-none ${large ? 'w-14 h-14' : 'w-10 h-10 sm:w-11 sm:h-11'}`} draggable={false} />}
+                  <b className={`text-stone-800 leading-tight break-keep ${large ? 'text-xl' : 'text-base sm:text-lg'}`}>{f.label}</b>
+                </>) : <span className="text-xs sm:text-sm text-stone-400 break-keep">{k === nextKind ? '여기에 넣어요' : ''}</span>}
               </div>
             );
           })}
