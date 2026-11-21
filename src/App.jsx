@@ -5056,14 +5056,14 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     setFrameFill(fill); setTries({ wrong: [], solved: false }); setFrameMsg('');
     if (fill.length < frameSlots.length) { boardSpeak(label, rate); return; }
     const s = fill.map(f => f.label).join(' ');
-    let say = `${s}. 맞아요!`;
+    let say = s;
     const nextScore = score[pIdx] === undefined ? { ...score, [pIdx]: !(missCount[pIdx] > 0) } : score;
     setScore(nextScore);
     setTries({ wrong: [], solved: true });
-    setFrameMsg(`“${s}” 맞아요!`);
+    setFrameMsg('');
     const left = targetPages.filter(x => nextScore[x] === undefined);
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
-    if (!left.length) { say += ' 다 했어요!'; advanceTimer.current = setTimeout(() => setShowResult(true), 1800); }
+    if (!left.length) { advanceTimer.current = setTimeout(() => setShowResult(true), 1800); }
     else { const nxt = left.find(x => x > pIdx) ?? left[0]; advanceTimer.current = setTimeout(() => setStoryPage(nxt), 1800); }
     boardSpeak(say, rate);
   };
@@ -5087,14 +5087,13 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     let say = v.label;
     if (practiceOn && !tries.solved && !waitPick && !showResult) {
       if (answerSet.has(v.label)) {
-        say = `${v.label}. 맞아요!`;
+        say = v.label;
         const nextScore = score[pIdx] === undefined ? { ...score, [pIdx]: tries.wrong.length === 0 } : score;
         setScore(nextScore);
         setTries(prev => ({ ...prev, solved: true }));
         const left = targetPages.filter(k => nextScore[k] === undefined);
         if (advanceTimer.current) clearTimeout(advanceTimer.current);
         if (!left.length) {
-          say += ' 다 했어요!';
           advanceTimer.current = setTimeout(() => setShowResult(true), 1000);
         } else if (sortMode && sortMany) {
           setPicked(false);
@@ -5738,7 +5737,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               style={{ ...(kc ? { borderColor: kc, borderWidth: 3 } : {}), ...(isAns && (tries.solved || flashAnswer) ? { borderColor: '#2E9E5B', boxShadow: '0 0 0 4px #2E9E5B55' }
                 : saying === i ? { borderColor: BOARD_PINK, boxShadow: `0 0 0 3px ${BOARD_PINK}55` } : {}), ...(practiceOrder ? { order: practiceOrder.get(i) } : {}) }}>
               {kc && <span className="absolute left-0 right-0 top-0 h-1.5" style={{ background: kc }} />}
-              {isAns && tries.solved && <span className="absolute top-1 right-1 rounded-full text-white text-xs font-bold px-2 py-0.5 z-10" style={{ background: '#2E9E5B' }}>맞아요</span>}
               {sortMode && v.label ? (() => {
                 const got = targetPages.filter(k => score[k] !== undefined && pageAns(pages[k]).includes(v.label));
                 return (<>
