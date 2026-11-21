@@ -3630,6 +3630,127 @@ async function sharedMediaSign(paths) {
   return out;
 }
 
+// ----- 자료실: 평가지·안내문 PDF (로그인한 선생님은 열기만, 올리기·지우기는 관리자만) -----
+//   목록은 aac_shared 'library_index', 파일은 aac-shared-media 'library/{id}.pdf'
+const LIBRARY_INDEX_KEY = 'library_index';
+async function sharedMediaRemove(path) {
+  try {
+    const headers = await authHeaders();
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${SHARED_MEDIA_BUCKET}/${path.split('/').map(encodeURIComponent).join('/')}`, {
+      method: 'DELETE', headers: { apikey: headers.apikey, Authorization: headers.Authorization },
+    });
+    return r.ok;
+  } catch (e) { return false; }
+}
+const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
+function LibraryModal({ isAdmin, onClose }) {
+  const [items, setItems] = useState(null);
+  const [err, setErr] = useState('');
+  const [file, setFile] = useState(null);
+  const [name, setName] = useState('');
+  const [src, setSrc] = useState('');
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+  const load = useCallback(async () => {
+    const r = await sharedGet(LIBRARY_INDEX_KEY);
+    if (r.error) { setErr('자료 목록을 불러오지 못했어요. 인터넷 연결을 확인해 주세요.'); setItems([]); return; }
+    let list = [];
+    try { list = r.value ? JSON.parse(r.value) : []; } catch { list = []; }
+    setItems(Array.isArray(list) ? list : []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const openItem = async (it) => {
+    const w = window.open('', '_blank');
+    const urls = await sharedMediaSign([it.path]);
+    const url = urls[it.path];
+    if (!url) { if (w) w.close(); safeAlert('파일을 열지 못했어요. 잠시 뒤에 다시 해 주세요.'); return; }
+    if (w) w.location.href = url; else window.location.href = url;
+  };
+  const pick = (f) => {
+    if (!f) return;
+    if (!/pdf$/i.test(f.type) && !/\.pdf$/i.test(f.name)) { safeAlert('PDF 파일만 올릴 수 있어요.'); return; }
+    if (f.size > 50 * 1048576) { safeAlert('50MB보다 큰 파일은 올릴 수 없어요.'); return; }
+    setFile(f);
+    if (!name) setName(f.name.normalize('NFC').replace(/\.pdf$/i, ''));
+  };
+  const upload = async () => {
+    if (!file || !name.trim() || !src.trim()) return;
+    setBusy(true);
+    const id = 'lib_' + Date.now();
+    const path = `library/${id}.pdf`;
+    const ok = await sharedMediaUpload(path, new File([file], `${id}.pdf`, { type: 'application/pdf' }));
+    if (!ok) {
+      setBusy(false);
+      safeAlert('올리지 못했어요.\nSupabase에 "자료실 PDF 받기" 설정을 먼저 붙여 넣었는지, 관리자 계정으로 로그인했는지 확인해 주세요.');
+      return;
+    }
+    const d = new Date();
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const next = [...(items || []), { id, name: name.trim(), src: src.trim(), path, size: file.size, date }];
+    const saved = await sharedSet(LIBRARY_INDEX_KEY, JSON.stringify(next));
+    setBusy(false);
+    if (!saved) { await sharedMediaRemove(path); safeAlert('목록에 넣지 못했어요. 다시 해 주세요.'); return; }
+    setItems(next); setFile(null); setName(''); setSrc('');
+    if (fileRef.current) fileRef.current.value = '';
+  };
+  const remove = async (it) => {
+    if (!safeConfirm(`'${it.name}'을(를) 자료실에서 지울까요?\n지우면 되돌릴 수 없어요.`)) return;
+    const next = (items || []).filter(x => x.id !== it.id);
+    const saved = await sharedSet(LIBRARY_INDEX_KEY, JSON.stringify(next));
+    if (!saved) { safeAlert('지우지 못했어요. 다시 해 주세요.'); return; }
+    await sharedMediaRemove(it.path);
+    setItems(next);
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-start sm:items-center justify-center p-3 overflow-auto" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-4 space-y-3" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="자료실">
+        <div className="flex items-center gap-2">
+          <FolderOpen className="w-5 h-5" style={{ color: BOARD_PINK }} />
+          <h3 className="font-bold text-stone-900 text-lg">자료실</h3>
+          <button onClick={onClose} className="ml-auto p-1 text-stone-400 hover:text-stone-700" aria-label="닫기"><X className="w-5 h-5" /></button>
+        </div>
+        <p className="text-sm text-stone-500">평가지·안내문처럼 센터에서 같이 쓰는 파일이에요. 열기를 누르면 새 창에서 열리고, 거기서 인쇄하면 돼요.</p>
+        {err && <p className="text-sm text-red-600">{err}</p>}
+        {items === null ? <p className="text-sm text-stone-400">불러오는 중이에요…</p> : (
+          items.length === 0 ? <p className="text-sm text-stone-400">아직 올린 자료가 없어요.</p> : (
+            <div className="space-y-2">
+              {items.map(it => (
+                <div key={it.id} className="flex items-center gap-3 border border-stone-200 rounded-xl p-2.5">
+                  <span className="w-10 h-12 rounded-md flex items-center justify-center text-xs font-black flex-none border border-stone-200" style={{ background: '#FDEEF2', color: BOARD_PINK }}>PDF</span>
+                  <span className="flex-1 min-w-0">
+                    <b className="block text-stone-800 break-words">{it.name}</b>
+                    <span className="text-xs text-stone-500">출처: {it.src} · {fmtSize(it.size || 0)} · {it.date} 올림</span>
+                  </span>
+                  <button onClick={() => openItem(it)} className="rounded-full px-3.5 py-1.5 text-sm font-bold text-white flex-none" style={{ background: BOARD_PINK }}>열기</button>
+                  {isAdmin && <button onClick={() => remove(it)} className="rounded-full px-2.5 py-1 text-xs border border-stone-200 text-red-600 flex-none">지우기</button>}
+                </div>
+              ))}
+            </div>
+          )
+        )}
+        {isAdmin && (
+          <div className="rounded-xl border-2 border-dashed p-3 space-y-2" style={{ borderColor: BOARD_PINK }}>
+            <b className="text-sm text-stone-800">자료 올리기 (관리자만)</b>
+            <label className="block text-xs font-bold text-stone-600">파일 (PDF, 50MB까지)
+              <input ref={fileRef} type="file" accept="application/pdf,.pdf" onChange={(e) => pick(e.target.files?.[0])} className="block w-full mt-1 text-sm" />
+            </label>
+            <div className="flex gap-2 flex-wrap">
+              <label className="flex-1 min-w-[160px] text-xs font-bold text-stone-600">이름
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="예: 초기 평가지" className="block w-full mt-1 border border-stone-300 rounded-lg px-2 py-1.5 text-sm font-normal" />
+              </label>
+              <label className="flex-1 min-w-[160px] text-xs font-bold text-stone-600">출처 (꼭 적어 주세요)
+                <input value={src} onChange={(e) => setSrc(e.target.value)} placeholder="예: SLP 자몽 (@slp_grapefruit)" className="block w-full mt-1 border border-stone-300 rounded-lg px-2 py-1.5 text-sm font-normal" />
+              </label>
+            </div>
+            <button onClick={upload} disabled={busy || !file || !name.trim() || !src.trim()}
+              className="rounded-full px-4 py-1.5 text-sm font-bold text-white disabled:opacity-40" style={{ background: BOARD_PINK }}>{busy ? '올리는 중…' : '올리기'}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ----- 기본 판 올리기 창 (관리자 전용) -----
 const BuiltinUploadModal = ({ count, onDone, onClose }) => {
   const [busy, setBusy] = useState('');
@@ -4657,6 +4778,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const [videoBusy, setVideoBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false); // 판 관리 메뉴
   const [showVoice, setShowVoice] = useState(false); // 목소리 고르기 창
+  const [showLibrary, setShowLibrary] = useState(false); // 자료실
   // 영상 소리 끄기 (이 기기에서 기억)
   const [videoMuted, setVideoMuted] = useState(() => { try { return localStorage.getItem('aac_video_muted') === '1'; } catch { return false; } });
   const toggleVideoMuted = () => setVideoMuted(m => {
@@ -5522,6 +5644,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               <button onClick={addBoard} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Plus className="w-4 h-4" /> 새 판</button>
               <button onClick={() => setShowImport(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Upload className="w-4 h-4" /> 칩판 넣기</button>
               {isAdmin && <button onClick={() => setShowBuiltinUpload(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2" style={{ color: '#993556' }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>}
+              <div className="my-1 border-t border-stone-100" />
+              <button onClick={() => setShowLibrary(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><FolderOpen className="w-4 h-4" /> 자료실</button>
             </div>
           )}
         </div>
@@ -5661,6 +5785,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       )}
 
       {showVoice && <VoiceModal rate={rate} setRate={setRate} onClose={() => setShowVoice(false)} />}
+      {showLibrary && <LibraryModal isAdmin={isAdmin} onClose={() => setShowLibrary(false)} />}
       {showBuiltinUpload && (
         <BuiltinUploadModal count={builtins.filter(b => !b.unlisted).length} onClose={() => setShowBuiltinUpload(false)}
           onDone={() => { setShowBuiltinUpload(false); reloadBuiltins(); }} />
