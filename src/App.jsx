@@ -6,7 +6,7 @@
  * 무단 복제·배포·재판매·온라인 게시를 엄격히 금지합니다.
  */
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu, Volume2, VolumeX, Printer, Maximize2, ChevronLeft } from 'lucide-react';
+import { Upload, X, Plus, Image as ImageIcon, Type, Settings2, Trash2, Copy, FileDown, History, ChevronDown, ChevronUp, Pencil, Search, Share2, FolderOpen, Lock, LogOut, UserPlus, Users, Shield, Eye, EyeOff, RotateCw, FlipHorizontal, GripVertical, Folder, FolderPlus, Edit3, HelpCircle, ArrowRight, Tag, RefreshCw, ArrowUpDown, Crop, Sparkles, Check, Menu, Volume2, VolumeX, Printer, Maximize2, ChevronLeft, MoreHorizontal, Star } from 'lucide-react';
 
 /* ================================================================
    도메인 잠금 (지적재산 보호)
@@ -1325,6 +1325,7 @@ const CardEditor = React.memo(({ card, onUpdate, onDelete, onDuplicate, onEditIm
 
   const rotateRight = () => onUpdate(card.id, { ...card, rotation: (rotation + 90) % 360 });
   const flip = () => onUpdate(card.id, { ...card, flipH: !card.flipH });
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // 카테고리 색상
   const cat = categories?.find(c => c.id === card.categoryId);
@@ -1396,48 +1397,7 @@ const CardEditor = React.memo(({ card, onUpdate, onDelete, onDuplicate, onEditIm
             </div>
           )}
 
-          {/* 회전/뒤집기/편집 버튼 (이미지 위에 hover시) */}
-          {card.image && (
-            <div className="absolute bottom-1 left-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex gap-1">
-              <button
-                onClick={rotateRight}
-                className="w-6 h-6 rounded-md bg-white/95 border border-stone-200 hover:bg-amber-50 flex items-center justify-center shadow-sm"
-                title="90도 회전"
-                aria-label="이미지 90도 회전"
-              >
-                <RotateCw className="w-3 h-3 text-stone-600" />
-              </button>
-              <button
-                onClick={flip}
-                className="w-6 h-6 rounded-md bg-white/95 border border-stone-200 hover:bg-amber-50 flex items-center justify-center shadow-sm"
-                title="좌우 반전"
-                aria-label="이미지 좌우 반전"
-              >
-                <FlipHorizontal className="w-3 h-3 text-stone-600" />
-              </button>
-              {onEditImage && (
-                <button
-                  onClick={() => onEditImage(card)}
-                  className="w-6 h-6 rounded-md bg-white/95 border border-stone-200 hover:bg-amber-50 flex items-center justify-center shadow-sm"
-                  title="이미지 편집 (자르기/밝기/대비)"
-                  aria-label="이미지 편집 (자르기, 밝기, 대비 조절)"
-                >
-                  <Crop className="w-3 h-3 text-stone-600" />
-                </button>
-              )}
-            </div>
-          )}
         </div>
-
-        {/* 외부 라벨 (카드 위/아래) */}
-        {showLabel && !labelInside && (
-          <div
-            className={`text-center px-2 mt-2 ${labelPos === 'top' ? 'order-first mb-2 mt-0' : ''}`}
-            style={{ fontFamily: font.css, fontSize: `${labelSize}px`, fontWeight: 600, minHeight: `${labelSize + 4}px`, color: '#1c1917' }}
-          >
-            {card.label || <span className="text-stone-300 font-normal">라벨 없음</span>}
-          </div>
-        )}
       </div>
 
       {/* 입력 영역 */}
@@ -1454,41 +1414,31 @@ const CardEditor = React.memo(({ card, onUpdate, onDelete, onDuplicate, onEditIm
             style={{ fontFamily: font?.css }}
           />
         </div>
-
-        {/* 카테고리 선택 */}
-        {categories && categories.length > 0 && (
-          <select
-            value={card.categoryId || ''}
-            onChange={(e) => onUpdate(card.id, { ...card, categoryId: e.target.value || null })}
-            className="mt-2 w-full text-xs bg-stone-50 border border-stone-200 rounded-md px-2 py-1.5 outline-none focus:border-amber-400 cursor-pointer"
-            style={cat ? { borderLeftColor: cat.color, borderLeftWidth: '4px' } : {}}
-          >
-            <option value="">카테고리 없음</option>
-            {categories.map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        )}
       </div>
 
-      {/* 삭제/복제 버튼 */}
-      <div className="absolute top-2 right-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex gap-1">
+      {/* ⋯ 메뉴: 돌리기 · 뒤집기 · 자르기 · 복제 · 지우기 */}
+      <div className="absolute top-2 right-2 z-20">
         <button
-          onClick={() => onDuplicate(card.id)}
-          className="w-7 h-7 rounded-md bg-white/95 border border-stone-200 hover:bg-stone-50 flex items-center justify-center shadow-sm"
-          title="복제"
-          aria-label="카드 복제"
+          onClick={() => setMenuOpen(o => !o)}
+          aria-expanded={menuOpen}
+          className={`w-8 h-8 rounded-lg border flex items-center justify-center shadow-sm ${menuOpen ? 'bg-stone-100 border-stone-400' : 'bg-white/95 border-stone-200 hover:bg-stone-50'}`}
+          title="더 보기"
+          aria-label="카드 메뉴 열기"
         >
-          <Copy className="w-3.5 h-3.5 text-stone-600" />
+          <MoreHorizontal className="w-4 h-4 text-stone-700" />
         </button>
-        <button
-          onClick={() => onDelete(card.id)}
-          className="w-7 h-7 rounded-md bg-white/95 border border-stone-200 hover:bg-red-50 hover:border-red-200 flex items-center justify-center shadow-sm"
-          title="삭제"
-          aria-label="카드 삭제"
-        >
-          <X className="w-3.5 h-3.5 text-stone-600 hover:text-red-500" />
-        </button>
+        {menuOpen && (<>
+          <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+          <div className="absolute right-0 mt-1 z-20 w-32 rounded-xl border border-stone-200 bg-white shadow-lg p-1 text-sm" onClick={() => setMenuOpen(false)}>
+            {card.image && (<>
+              <button onClick={rotateRight} className="w-full px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700"><RotateCw className="w-3.5 h-3.5" /> 돌리기</button>
+              <button onClick={flip} className="w-full px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700"><FlipHorizontal className="w-3.5 h-3.5" /> 뒤집기</button>
+              {onEditImage && <button onClick={() => onEditImage(card)} className="w-full px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700"><Crop className="w-3.5 h-3.5" /> 자르기</button>}
+            </>)}
+            <button onClick={() => onDuplicate(card.id)} className="w-full px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700"><Copy className="w-3.5 h-3.5" /> 복제</button>
+            <button onClick={() => onDelete(card.id)} className="w-full px-2.5 py-1.5 rounded-lg hover:bg-red-50 flex items-center gap-2 text-red-600"><Trash2 className="w-3.5 h-3.5" /> 지우기</button>
+          </div>
+        </>)}
       </div>
     </div>
   );
@@ -2082,8 +2032,8 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser, onImportCard })
           </button>
         </div>
 
-        {/* base64 → Storage 마이그레이션 (관리자/본인 계정) */}
-        <div className="px-6 pt-4">
+        {/* base64 → Storage 마이그레이션 — 이전 끝나서 화면에서 숨김 (필요하면 false → true) */}
+        {false && <div className="px-6 pt-4">
           <div className="bg-sky-50 border border-sky-200 rounded-xl p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -2123,7 +2073,7 @@ const UserManagement = ({ users, onUpdate, onClose, currentUser, onImportCard })
               </div>
             )}
           </div>
-        </div>
+        </div>}
 
         {/* 내용 */}
         <div className="flex-1 overflow-y-auto p-6">
@@ -2530,7 +2480,7 @@ const CategoryManager = ({ categories, onUpdate, onClose }) => {
 // ─────────────────────────────────────────────────────────────
 const LibraryView = ({
   library, categories, libraryCatId, setLibraryCatId,
-  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, onMoveSelected, onDiagnose, diagResult, cardSearch, setCardSearch,
+  selected, setSelected, onAddToPrint, onAddImagesClick, onImportClick, onManageCategories, onDeleteCard, onDeleteSelected, onMoveSelected, onDiagnose, diagResult, cardSearch, setCardSearch, isAdmin,
 }) => {
   // 탭 목록: 카테고리들 + 미분류
   const NONE = '__none__';
@@ -2558,35 +2508,15 @@ const LibraryView = ({
 
   return (
     <div className="flex flex-col h-full">
-      {/* 헤더: 카테고리 관리 버튼 */}
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-xs text-stone-500">카테고리를 골라 카드를 보관하고, 인쇄판에 담아 쓰세요</p>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button
-            onClick={onDiagnose}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition"
-            title="저장 상태 진단"
-          >
-            🔍 진단
-          </button>
-          <button
-            onClick={onManageCategories}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-lg transition"
-          >
-            <Settings2 className="w-3.5 h-3.5" /> 카테고리 관리
-          </button>
-        </div>
-      </div>
-
-      {/* 진단 결과 배너 */}
-      {diagResult && (
+      {/* 진단 결과 배너 (관리자만) */}
+      {isAdmin && diagResult && (
         <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 whitespace-pre-wrap" style={{ fontFamily: 'monospace' }}>
           {diagResult}
         </div>
       )}
 
-      {/* 카테고리 선택 (드롭다운) */}
-      <div className="mb-3">
+      {/* 카테고리 선택 + 검색 (한 줄) */}
+      <div className="mb-3 flex items-stretch gap-2 flex-wrap">
         <select
           value={currentKey}
           onChange={(e) => {
@@ -2594,7 +2524,7 @@ const LibraryView = ({
             setLibraryCatId(v === NONE ? null : v);
             setCardSearch('');
           }}
-          className="w-full px-3 py-2.5 rounded-lg border border-stone-300 bg-white text-sm font-bold text-stone-800 outline-none focus:border-stone-500 transition cursor-pointer"
+          className="flex-1 sm:flex-none sm:w-56 min-w-0 px-3 py-2.5 rounded-lg border border-stone-300 bg-white text-sm font-bold text-stone-800 outline-none focus:border-stone-500 transition cursor-pointer"
         >
           {categories.map((cat) => (
             <option key={cat.id} value={cat.id}>
@@ -2611,42 +2541,56 @@ const LibraryView = ({
               </option>
             ))}
         </select>
+        {/* 검색 (전체 카테고리에서 찾음) */}
+        <div className="flex-1 min-w-[180px] flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-2">
+          <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
+          <input
+            type="text"
+            value={cardSearch}
+            onChange={(e) => setCardSearch(e.target.value)}
+            placeholder="전체에서 찾기"
+            className="flex-1 min-w-0 bg-transparent text-sm outline-none text-stone-800"
+          />
+          {cardSearch && (
+            <button onClick={() => setCardSearch('')} className="p-1 hover:bg-stone-100 rounded transition flex-shrink-0">
+              <X className="w-3 h-3 text-stone-500" />
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* 액션 바: 이 카테고리에 카드 추가 / 묶음 불러오기 */}
-      <div className="flex items-center gap-2 mb-3">
+      {/* 액션 바: 이 카테고리에 카드 추가 / 파일에서 가져오기 / 카테고리 관리 */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
         <button
           onClick={onAddImagesClick}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold rounded-lg transition"
+          title="지금 보고 있는 카테고리에 저장돼요"
         >
           <Plus className="w-3.5 h-3.5" /> 이미지 추가
         </button>
         <button
           onClick={onImportClick}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-stone-200 hover:bg-stone-50 text-stone-700 text-xs font-bold rounded-lg transition"
+          title="받은 .json 파일의 카드를 지금 보고 있는 카테고리에 넣어요"
         >
-          <FolderOpen className="w-3.5 h-3.5" /> 묶음 불러오기
+          <FolderOpen className="w-3.5 h-3.5" /> 파일에서 카드 가져오기
         </button>
-        <span className="text-[11px] text-stone-400 ml-auto hidden sm:block">
-          여기서 추가하면 이 카테고리에 저장돼요
-        </span>
-      </div>
-
-      {/* 검색 (전체 카테고리에서 찾음) */}
-      <div className="mb-3 flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-2">
-        <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
-        <input
-          type="text"
-          value={cardSearch}
-          onChange={(e) => setCardSearch(e.target.value)}
-          placeholder="전체 카테고리에서 검색..."
-          className="flex-1 bg-transparent text-sm outline-none text-stone-800"
-        />
-        {cardSearch && (
-          <button onClick={() => setCardSearch('')} className="p-1 hover:bg-stone-100 rounded transition flex-shrink-0">
-            <X className="w-3 h-3 text-stone-500" />
+        <div className="flex-1" />
+        {isAdmin && (
+          <button
+            onClick={onDiagnose}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition"
+            title="저장 상태 진단 (관리자만 보여요)"
+          >
+            <Search className="w-3.5 h-3.5" /> 진단
           </button>
         )}
+        <button
+          onClick={onManageCategories}
+          className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-lg transition"
+        >
+          <Settings2 className="w-3.5 h-3.5" /> 카테고리 관리
+        </button>
       </div>
       {q && (
         <p className="text-[11px] text-stone-500 mb-2 -mt-1">
@@ -3436,7 +3380,7 @@ const TutorialOverlay = ({ onClose }) => {
     {
       icon: Upload,
       title: '1. 이미지 올리기',
-      desc: '메인 화면 위쪽 영역에 이미지를 끌어다 놓거나 클릭해서 선택하세요. 한 번에 여러 장 가능해요. 파일명이 자동으로 라벨이 됩니다.',
+      desc: '메인 화면 위쪽 영역에 이미지를 끌어다 놓거나 클릭해서 선택하세요. 한 번에 여러 장 가능해요.',
     },
     {
       icon: Type,
@@ -3446,32 +3390,32 @@ const TutorialOverlay = ({ onClose }) => {
     {
       icon: Settings2,
       title: '3. 카드 설정',
-      desc: '왼쪽 사이드바에서 카드 크기 (50/45/40/30mm), 글자 위치, 글씨체, 자르는 선 등을 조절할 수 있어요.',
+      desc: '인쇄판의 "카드 설정" 버튼에서 카드 크기 (50/45/40/30mm), 글자 위치, 글씨체, 자르는 선 등을 조절할 수 있어요.',
     },
     {
       icon: GripVertical,
       title: '4. 카드 정리',
-      desc: '카드를 드래그해서 순서를 바꿀 수 있어요. 카드에 마우스를 올리면 회전(↻)/뒤집기 버튼도 나옵니다.',
+      desc: '카드를 드래그해서 순서를 바꿀 수 있어요. 카드 오른쪽 위 ⋯를 누르면 돌리기 · 뒤집기 · 자르기 · 복제 · 지우기가 나옵니다.',
     },
     {
       icon: Folder,
       title: '5. 카테고리 (선택)',
-      desc: '"동물 / 음식 / 행동" 같은 카테고리를 만들고 카드를 분류할 수 있어요. 사이드바의 카테고리 버튼에서 관리합니다.',
+      desc: '"동물 / 음식 / 행동" 같은 카테고리를 만들고 카드를 보관할 수 있어요. 위쪽 "카테고리" 탭에서 관리합니다.',
     },
     {
       icon: FileDown,
       title: '6. PDF로 출력',
-      desc: '인쇄판에서 "인쇄 / PDF 저장" 버튼을 누르면 인쇄 대화상자가 열립니다. 인쇄 대상에서 "PDF로 저장"을 선택하면 끝! (미리 확인하려면 상단 "인쇄 미리보기" 탭)',
+      desc: '인쇄판에서 "인쇄 / PDF 저장" 버튼을 누르면 인쇄 대화상자가 열립니다. 인쇄 대상에서 "PDF로 저장"을 선택하면 끝! (미리 확인하려면 "미리보기" 버튼)',
     },
     {
       icon: History,
-      title: '7. 이전 인쇄 묶음',
-      desc: '인쇄한 카드 묶음은 자동으로 사이드바 "이전 인쇄 묶음"에 저장돼요. 다음에 같은 묶음 다시 쓸 때 [추가] 버튼 한 번이면 됩니다.',
+      title: '7. 지난 인쇄 다시 쓰기',
+      desc: '인쇄한 카드 묶음은 자동으로 저장돼요. 인쇄판의 "지난 인쇄 다시 쓰기"에서 [추가] 버튼 한 번이면 같은 묶음을 다시 쓸 수 있어요.',
     },
     {
       icon: Share2,
       title: '8. 다른 선생님과 공유',
-      desc: '내 카드 묶음을 .json 파일로 내보내서 카톡으로 동료에게 보낼 수 있어요. 받은 분은 "묶음 불러오기" 버튼으로 추가하면 끝!',
+      desc: '내 카드 묶음을 .json 파일로 내보내서 카톡으로 동료에게 보낼 수 있어요. 받은 분은 "지난 인쇄 다시 쓰기" → "파일에서 불러오기"로 추가하면 끝!',
     },
   ];
 
@@ -4862,7 +4806,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const [showImport, setShowImport] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [saying, setSaying] = useState(null);
-  const [withChips, setWithChips] = useState(true);
+  const [printAsk, setPrintAsk] = useState(false); // 인쇄: 칩도 같이 할지 묻는 창
+  const [editMore, setEditMore] = useState(false); // 판 고치기: 더 보기
   const [rate, setRate] = useState(() => {
     try { const v = parseFloat(localStorage.getItem('aac_board_rate')); return v >= 0.5 && v <= 1.5 ? v : 0.9; } catch { return 0.9; }
   });
@@ -5121,7 +5066,14 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
 
   const setCell = (i, patch) => updateBoard(b => ({ ...b, cells: b.cells.map((c, j) => j === i ? { ...c, ...patch } : c) }));
 
-  const doPrint = () => {
+  // ☰ → 인쇄: 오려 쓰는 칩이 생길 판이면 먼저 물어봄
+  const askPrint = () => {
+    if (!board || !board.cells) return;
+    const hasChips = board.cells.some((c, i) => { const v = cellView(c, i); return !v.hidden && (v.image || v.label); });
+    if (hasChips) setPrintAsk(true); else doPrint(false);
+  };
+  const doPrint = (withChips) => {
+    setPrintAsk(false);
     if (!board || !board.cells) return;
     const pagesInfo = board.kind === 'story'
       ? (board.pages || []).map(pg => {
@@ -5133,10 +5085,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     printBoardWindow(board, board.cells.map(cellView), withChips, pagesInfo);
   };
 
-  const testSound = () => {
-    if (!boardSpeak('소리가 잘 들려요', rate)) safeAlert('이 브라우저에서는 소리로 읽기를 쓸 수 없어요.');
-  };
-
   const kidName = kidId === 'all' ? '모든 아이' : (kids.find(k => k.id === kidId)?.name || '모든 아이');
   // 아이별 자주 쓰는 판 (아이 목록에 함께 저장: kid.fav = [판 id])
   const curKid = kidId === 'all' ? null : kids.find(k => k.id === kidId) || null;
@@ -5146,6 +5094,13 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const toggleFav = () => {
     if (!curKid || !activeId) return;
     const next = isFav ? favIds.filter(x => x !== activeId) : [...favIds, activeId];
+    saveKids(kids.map(k => k.id === curKid.id ? { ...k, fav: next } : k));
+  };
+  // 아이 화면에서 ☆ 바로 누르기: 그 판을 자주 쓰는 판에 넣고 빼기
+  const toggleFavFor = (boardId) => {
+    if (!curKid || !boardId) return;
+    const cur = Array.isArray(curKid.fav) ? curKid.fav : [];
+    const next = cur.includes(boardId) ? cur.filter(x => x !== boardId) : [...cur, boardId];
     saveKids(kids.map(k => k.id === curKid.id ? { ...k, fav: next } : k));
   };
 
@@ -5775,6 +5730,24 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const boardThumb = (b) => b?.thumb || (b && !b.builtin ? (b.cells || []).map(c => (c.cardId ? cardMap[c.cardId]?.image : c.image)).find(Boolean) : '') || '';
   const kidFavs = (k) => (Array.isArray(k?.fav) ? k.fav : []).map(id => boards.find(b => b.id === id) || builtins.find(b => b.id === id && !b.unlisted)).filter(Boolean);
   const openPicker = () => { setPickQ(''); setPickArea(null); setShowPicker(true); };
+  // 판 갈래(놀이·생활·…) — 판 고르기 창과 아이 화면이 같이 씀
+  const BOARD_AREAS = [
+    { k: 'play', name: '🧸 놀이', groups: ['기본 놀이판 (틈새톡톡)', '놀이 AAC (톡톡 붙이고 조물조물)'] },
+    { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기'] },
+    { k: 'body', name: '🩹 몸 · 아파요', groups: ['아파요 다쳤어요 (칩판)', '아파요 다쳤어요 (그림 보고 말하기)', '신체 부위 공부 (다원쌤)'] },
+    { k: 'feel', name: '😊 기분 · 하는 말', groups: ['기분', '이럴 때 무슨 말 해야 돼?'] },
+    { k: 'verb', name: '🏃 동사', groups: ['만 3세 고빈도 동사', '하고 있어요 · 다 했어요 (이어짐)', '내가 했어요 · 친구에게 해 줬어요 (이어짐)'] },
+    { k: 'story', name: '📖 이야기', groups: ['이야기책', '반대말 동화', '사계절 동화'] },
+    { k: 'think', name: '🧩 생각하기', groups: ['어디에 들어가?', '딱 맞는 짝을 찾아요', '빠진 부분 찾기', '어디에 있어?'] },
+  ];
+  const areaInfo = () => {
+    const listed = builtins.filter(b => !b.unlisted);
+    const known = new Set(BOARD_AREAS.flatMap(a => a.groups));
+    const etc = [...new Set(listed.map(b => b.group || '기본 판'))].filter(g => !known.has(g));
+    const areas = [...(boards.length ? [{ k: 'mine', name: '⭐ 내 판', groups: null }] : []), ...BOARD_AREAS, ...(etc.length ? [{ k: 'etc', name: '그 밖의 판', groups: etc }] : [])];
+    const areaOf = (b) => (b && !b.builtin ? 'mine' : (areas.find(a => a.groups && a.groups.includes(b?.group || '기본 판'))?.k || 'etc'));
+    return { listed, areas, areaOf };
+  };
   const renderHome = () => {
     if (homeStep === 'favs' && curKid) {
       const fb = kidFavs(curKid);
@@ -5784,20 +5757,21 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
             <button onClick={() => setHomeStep('kids')} className="flex items-center gap-1 text-sm font-bold text-stone-500 px-2 py-1.5 rounded-lg hover:bg-stone-100"><ChevronLeft className="w-4 h-4" /> 아이</button>
             <b className="text-xl text-stone-900 truncate">{curKid.name}</b>
           </div>
-          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>
+          {/* 아이 화면: 자주 쓰는 판만 크게 + '판 더 넣기' (넣고 빼기는 판 고르기 창의 ☆) */}
+          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))' }}>
             {fb.map(b => { const th = boardThumb(b); return (
               <button key={b.id} onClick={() => { setActiveId(b.id); setMode('use'); setHome(false); }}
                 className="rounded-2xl border-2 border-stone-200 bg-white p-2 flex flex-col items-center gap-1.5 text-center hover:border-pink-300 active:scale-[0.98] transition">
                 {th ? <img src={th} alt="" className="w-full aspect-[4/3] object-contain rounded-xl bg-white" draggable={false} />
                   : <span className="w-full aspect-[4/3] rounded-xl flex items-center justify-center" style={{ background: '#FDEEF2', color: BOARD_PINK }}><FolderOpen className="w-8 h-8" /></span>}
-                <b className="text-sm text-stone-800 leading-snug break-keep">{b.name}</b>
+                <b className="text-base text-stone-800 leading-snug break-keep">{b.name}</b>
               </button>
             ); })}
-            <button onClick={openPicker} className="rounded-2xl border-2 border-dashed border-stone-300 bg-white p-2 flex flex-col items-center justify-center gap-1.5 text-stone-500 min-h-[150px] hover:border-pink-300">
-              <Search className="w-6 h-6" /><b className="text-sm">다른 판 찾기</b>
+            <button onClick={openPicker} className="rounded-2xl border-2 border-dashed border-stone-300 bg-white p-2 flex flex-col items-center justify-center gap-1.5 text-stone-500 min-h-[170px] hover:border-pink-300">
+              <Plus className="w-7 h-7" /><b className="text-base">판 더 넣기</b><span className="text-xs text-stone-400">빼기도 여기서</span>
             </button>
           </div>
-          {!fb.length && <p className="text-sm text-stone-500 text-center">아직 {curKid.name} 자주 쓰는 판이 없어요. ‘다른 판 찾기’에서 판을 열고 ☰ 메뉴의 ☆을 눌러 넣어요.</p>}
+          {!fb.length && <p className="text-sm text-stone-500 text-center">‘판 더 넣기’를 누르고 판 오른쪽 위 ☆을 누르면 {curKid.name} 자주 쓰는 판에 모여요.</p>}
         </div>
       );
     }
@@ -5868,7 +5842,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
                 setMode('edit');
               }} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Pencil className="w-4 h-4" /> 판 고치기</button>}
               {board && <button onClick={() => setMode('hide')} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><EyeOff className="w-4 h-4" /> 칸 숨기기</button>}
-              {board && <button onClick={doPrint} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Printer className="w-4 h-4" /> 인쇄</button>}
+              {board && <button onClick={askPrint} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Printer className="w-4 h-4" /> 인쇄</button>}
               <button onClick={() => setShowVoice(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Volume2 className="w-4 h-4" /> 목소리</button>
               <div className="my-1 border-t border-stone-100" />
               <button onClick={addBoard} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Plus className="w-4 h-4" /> 새 판</button>
@@ -5910,11 +5884,38 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           </div>}
 
           {mode === 'edit' && (
-            <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 flex flex-wrap items-center gap-3 text-sm">
+            <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 text-sm">
+            {/* 자주 바꾸는 것: 판 이름 · 한 줄 칸 수 · 칸 더하기/빼기 */}
+            <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-1.5">판 이름
                 <input value={board.name} onChange={(e) => updateBoard(b => ({ ...b, name: e.target.value }))}
                   className="border border-stone-300 rounded-md px-2 py-1 w-36" />
               </label>
+              <label className="flex items-center gap-1.5">한 줄에
+                <select value={board.cols || 4} onChange={(e) => updateBoard(b => ({ ...b, cols: parseInt(e.target.value, 10) }))}
+                  className="border border-stone-300 rounded-md px-1.5 py-1 bg-white">
+                  {[1, 2, 3, 4, 5, 6].map(n => <option key={n} value={n}>{n}칸</option>)}
+                </select>
+              </label>
+              <span className="flex items-center gap-1">칸 {board.cells.length}개
+                <button onClick={() => updateBoard(b => ({ ...b, cells: [...b.cells, { cardId: null, label: '' }] }))}
+                  className="ml-1 w-7 h-7 rounded-md border border-stone-300 bg-white flex items-center justify-center" aria-label="칸 더하기"><Plus className="w-4 h-4" /></button>
+                <button onClick={() => {
+                  if (board.cells.length <= 1) return;
+                  const last = board.cells[board.cells.length - 1];
+                  if ((last.cardId || last.label) && !safeConfirm('마지막 칸을 지울까요?')) return;
+                  updateBoard(b => ({ ...b, cells: b.cells.slice(0, -1) }));
+                }} className="w-7 h-7 rounded-md border border-stone-300 bg-white flex items-center justify-center text-lg leading-none" aria-label="마지막 칸 빼기">−</button>
+              </span>
+              <div className="flex-1" />
+              <button onClick={() => setEditMore(v => !v)} aria-expanded={editMore}
+                className="px-3 py-1 rounded-lg border border-stone-300 bg-white flex items-center gap-1 text-stone-700">
+                {editMore ? <>접기 <ChevronUp className="w-4 h-4" /></> : <>더 보기 <ChevronDown className="w-4 h-4" /></>}
+              </button>
+            </div>
+            {/* 더 보기: 묶음 · 글자 보이기 · 문장 만들기 · 판 지우기 */}
+            {editMore && (
+            <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-stone-200">
               <label className="flex items-center gap-1.5">묶음
                 <select value={(board.group || '').trim()} onChange={(e) => {
                   let g = e.target.value;
@@ -5930,22 +5931,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
                   <option value="__new__">+ 새 묶음</option>
                 </select>
               </label>
-              <label className="flex items-center gap-1.5">한 줄에
-                <select value={board.cols || 4} onChange={(e) => updateBoard(b => ({ ...b, cols: parseInt(e.target.value, 10) }))}
-                  className="border border-stone-300 rounded-md px-1.5 py-1 bg-white">
-                  {[1, 2, 3, 4, 5, 6].map(n => <option key={n} value={n}>{n}칸</option>)}
-                </select>
-              </label>
-              <span className="flex items-center gap-1">칸 수 {board.cells.length}
-                <button onClick={() => updateBoard(b => ({ ...b, cells: [...b.cells, { cardId: null, label: '' }] }))}
-                  className="ml-1 w-7 h-7 rounded-md border border-stone-300 flex items-center justify-center" aria-label="칸 더하기"><Plus className="w-4 h-4" /></button>
-                <button onClick={() => {
-                  if (board.cells.length <= 1) return;
-                  const last = board.cells[board.cells.length - 1];
-                  if ((last.cardId || last.label) && !safeConfirm('마지막 칸을 지울까요?')) return;
-                  updateBoard(b => ({ ...b, cells: b.cells.slice(0, -1) }));
-                }} className="w-7 h-7 rounded-md border border-stone-300 flex items-center justify-center text-lg leading-none" aria-label="마지막 칸 빼기">−</button>
-              </span>
               <label className="flex items-center gap-1.5">
                 <input type="checkbox" checked={board.showLabel !== false} onChange={(e) => updateBoard(b => ({ ...b, showLabel: e.target.checked }))} />
                 그림 밑 글자 보이기
@@ -5954,17 +5939,11 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
                 <input type="checkbox" checked={sentenceOn} onChange={(e) => updateBoard(b => ({ ...b, sentence: e.target.checked }))} />
                 낱말 이어 문장 만들기
               </label>
-              <label className="flex items-center gap-1.5">말 빠르기
-                <input type="range" min="0.5" max="1.3" step="0.1" value={rate} onChange={(e) => setRate(parseFloat(e.target.value))} />
-                <span className="tabular-nums w-7">{rate.toFixed(1)}</span>
-              </label>
-              <button onClick={testSound} className="text-xs underline text-stone-600">소리 들어 보기</button>
-              <label className="flex items-center gap-1.5">
-                <input type="checkbox" checked={withChips} onChange={(e) => setWithChips(e.target.checked)} />
-                인쇄할 때 오려 쓰는 칩도 함께
-              </label>
               <div className="flex-1" />
               <button onClick={deleteBoard} className="text-red-600 flex items-center gap-1"><Trash2 className="w-4 h-4" /> 판 지우기</button>
+            </div>
+            )}
+            <p className="text-xs text-stone-400 mt-2">말 빠르기·목소리는 ☰ → 목소리에서 바꿔요.</p>
             </div>
           )}
 
@@ -6016,32 +5995,38 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         />
       )}
 
+      {printAsk && board && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3" onClick={() => setPrintAsk(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-sm p-5 space-y-4" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="인쇄">
+            <div className="flex items-center gap-2">
+              <Printer className="w-5 h-5" style={{ color: BOARD_PINK }} />
+              <h3 className="font-bold text-stone-900">인쇄</h3>
+              <button onClick={() => setPrintAsk(false)} className="ml-auto p-1 text-stone-400 hover:text-stone-700" aria-label="닫기"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-sm text-stone-700 leading-relaxed">오려 쓰는 칩도 같이 인쇄할까요?<br /><span className="text-stone-500">칩은 판 다음 장에 5cm 칸으로 나와요.</span></p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => doPrint(false)} className="px-4 py-2 rounded-lg border border-stone-300 text-sm font-bold text-stone-700">판만</button>
+              <button onClick={() => doPrint(true)} className="px-4 py-2 rounded-lg text-white text-sm font-bold" style={{ background: BOARD_PINK }}>칩도 같이</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showVoice && <VoiceModal rate={rate} setRate={setRate} onClose={() => setShowVoice(false)} />}
       {showLibrary && <LibraryModal isAdmin={isAdmin} onClose={() => setShowLibrary(false)} />}
       {renderPracticeSettings()}
       {showPicker && (() => {
-        const AREAS = [
-          { k: 'play', name: '🧸 놀이', groups: ['기본 놀이판 (틈새톡톡)', '놀이 AAC (톡톡 붙이고 조물조물)'] },
-          { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기'] },
-          { k: 'body', name: '🩹 몸 · 아파요', groups: ['아파요 다쳤어요 (칩판)', '아파요 다쳤어요 (그림 보고 말하기)', '신체 부위 공부 (다원쌤)'] },
-          { k: 'feel', name: '😊 기분 · 하는 말', groups: ['기분', '이럴 때 무슨 말 해야 돼?'] },
-          { k: 'verb', name: '🏃 동사', groups: ['만 3세 고빈도 동사', '하고 있어요 · 다 했어요 (이어짐)', '내가 했어요 · 친구에게 해 줬어요 (이어짐)'] },
-          { k: 'story', name: '📖 이야기', groups: ['이야기책', '반대말 동화', '사계절 동화'] },
-          { k: 'think', name: '🧩 생각하기', groups: ['어디에 들어가?', '딱 맞는 짝을 찾아요', '빠진 부분 찾기', '어디에 있어?'] },
-        ];
-        const listed = builtins.filter(b => !b.unlisted);
-        const known = new Set(AREAS.flatMap(a => a.groups));
-        const etc = [...new Set(listed.map(b => b.group || '기본 판'))].filter(g => !known.has(g));
-        const areas = [...(boards.length ? [{ k: 'mine', name: '⭐ 내 판', groups: null }] : []), ...AREAS, ...(etc.length ? [{ k: 'etc', name: '그 밖의 판', groups: etc }] : [])];
-        const areaOf = (b) => (b && !b.builtin ? 'mine' : (areas.find(a => a.groups && a.groups.includes(b?.group || '기본 판'))?.k || 'etc'));
+        const { listed, areas, areaOf } = areaInfo();
         const curArea = pickArea || (board ? areaOf(board) : areas[0]?.k);
         const q = pickQ.trim();
         const close = () => setShowPicker(false);
         const choose = (id) => { setActiveId(id); setMode('use'); setHome(false); close(); };
         const Card = ({ b }) => {
           const th = b.thumb || (b.builtin ? '' : (b.cells || []).map((c, i) => (c.cardId ? cardMap[c.cardId]?.image : c.image)).find(Boolean));
+          const on = !!(curKid && favIds.includes(b.id));
           return (
-            <button onClick={() => choose(b.id)} className="flex items-center gap-2 rounded-xl border-2 bg-white p-1.5 text-left min-w-0"
+            <div className="relative min-w-0">
+            <button onClick={() => choose(b.id)} className={`w-full h-full flex items-center gap-2 rounded-xl border-2 bg-white p-1.5 text-left min-w-0 ${curKid ? 'pr-11' : ''}`}
               style={b.id === activeId ? { borderColor: BOARD_PINK, background: '#FDEEF2' } : { borderColor: '#E7E1E3' }}>
               {th ? <img src={th} alt="" className="w-11 h-11 rounded-lg object-contain bg-white border border-stone-200 flex-none" draggable={false} />
                 : <span className="w-11 h-11 rounded-lg flex items-center justify-center flex-none border border-stone-200" style={{ background: '#FDEEF2', color: BOARD_PINK }}><FolderOpen className="w-5 h-5" /></span>}
@@ -6053,6 +6038,17 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
                 </span>}
               </span>
             </button>
+            {/* ☆: 지금 아이의 자주 쓰는 판에 바로 넣고 빼기 */}
+            {curKid && (
+              <button onClick={() => toggleFavFor(b.id)} aria-pressed={on}
+                aria-label={on ? `${curKid.name} 자주 쓰는 판에서 빼기` : `${curKid.name} 자주 쓰는 판에 넣기`}
+                title={on ? '자주 쓰는 판에서 빼기' : '자주 쓰는 판에 넣기'}
+                className="absolute top-1/2 -translate-y-1/2 right-1.5 w-9 h-9 rounded-full border flex items-center justify-center"
+                style={on ? { background: '#FDF3DC', borderColor: '#E0A100', color: '#9A6B00' } : { background: '#fff', borderColor: '#D6D3D1', color: '#A8A29E' }}>
+                <Star className="w-5 h-5" fill={on ? '#E0A100' : 'none'} strokeWidth={2} />
+              </button>
+            )}
+            </div>
           );
         };
         const grid = (list) => <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' }}>{list.map(b => <Card key={b.id} b={b} />)}</div>;
@@ -6065,7 +6061,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           body = (<>
             {curKid && (<>
               <h4 className="text-xs font-bold mt-3 mb-1.5" style={{ color: '#9A6B00' }}>⭐ {curKid.name} 자주 쓰는 판</h4>
-              {favBoards.length ? grid(favBoards) : <p className="text-sm text-stone-400">아직 없어요. 판을 열고 ☰ 메뉴에서 ☆을 눌러 넣어요.</p>}
+              {favBoards.length ? grid(favBoards) : <p className="text-sm text-stone-400">아직 없어요. 아래 판 오른쪽의 ☆을 누르면 여기에 모여요.</p>}
             </>)}
             <div className="flex gap-1.5 overflow-x-auto py-2.5 mt-1">
               {areas.map(x => (
@@ -6086,7 +6082,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center" onClick={close}>
             <div className="bg-white w-full sm:max-w-3xl rounded-t-2xl sm:rounded-2xl shadow-xl h-[88vh] sm:h-auto sm:max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="판 고르기">
               <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-100">
-                <b className="text-lg text-stone-900">판 고르기</b>
+                <b className="text-lg text-stone-900">{curKid ? `${curKid.name} 판 고르기` : '판 고르기'}</b>
+                {curKid && <span className="text-xs text-stone-500 flex items-center gap-1"><Star className="w-3.5 h-3.5" /> = 자주 쓰는 판</span>}
                 <button onClick={close} className="ml-auto p-1 text-stone-400" aria-label="닫기"><X className="w-5 h-5" /></button>
               </div>
               <div className="overflow-auto px-4 pb-5 pt-3">
@@ -6218,6 +6215,17 @@ export default function App() {
   const [cardSearch, setCardSearch] = useState(''); // 카드 검색어 (라벨로)
   const [sortMode, setSortMode] = useState('default'); // 'default' | 'label' | 'category' | 'shortest' | 'longest'
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false); // 모바일 사이드바 토글
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false); // 위쪽 이름 동그라미 메뉴
+  const [showCardSettings, setShowCardSettings] = useState(false); // 인쇄판: 카드 설정 창
+  const [cardMoreOpen, setCardMoreOpen] = useState(false); // 인쇄판: ⋯ (일괄 편집·내보내기·전체 삭제)
+  const profileMenuRef = useRef(null);
+  // 메뉴 바깥을 누르면 닫힘 (위쪽 바가 흐림 효과라 덮개 방식은 바 안에서만 먹어서 이렇게 처리)
+  useEffect(() => {
+    if (!profileMenuOpen) return undefined;
+    const onDown = (e) => { if (profileMenuRef.current && !profileMenuRef.current.contains(e.target)) setProfileMenuOpen(false); };
+    document.addEventListener('pointerdown', onDown);
+    return () => document.removeEventListener('pointerdown', onDown);
+  }, [profileMenuOpen]);
   const [editingImageCard, setEditingImageCard] = useState(null); // 이미지 편집 중인 카드
   const [settingsTab, setSettingsTab] = useState('card'); // 'card' | 'print' - 사이드바 탭
 
@@ -6225,7 +6233,9 @@ export default function App() {
   const [showBulkEditor, setShowBulkEditor] = useState(false);
 
   // ───── 라이브러리(영구 보관) 상태 ─────
-  const [viewMode, setViewMode] = useState('print'); // 'print'(인쇄판) | 'library'(라이브러리)
+  const [viewMode, setViewModeRaw] = useState('print'); // 'print'(인쇄판) | 'library'(라이브러리) | 'board'(말하는 판)
+  // 탭을 옮기면 열려 있던 모바일 설정 칸은 닫음 (설정 칸은 인쇄판에서만 씀)
+  const setViewMode = useCallback((m) => { setViewModeRaw(m); setMobileSidebarOpen(false); }, []);
   const [library, setLibrary] = useState({}); // { [categoryId or '__none__']: cards[] }
   const libraryLoadedRef = useRef(false); // 로드 완료 전 저장 금지 (덮어쓰기 방지)
   const [libraryCatId, setLibraryCatId] = useState(null); // 라이브러리에서 보고 있는 카테고리 (null=미분류)
@@ -6412,7 +6422,7 @@ export default function App() {
           devWarn('자동 저장 재시도도 실패:', e2);
           if (!draftQuotaWarnedRef.current) {
             draftQuotaWarnedRef.current = true;
-            safeAlert('⚠️ 자동 저장 실패\n브라우저 저장 공간이 부족합니다.\n사이드바 "현재 카드 내보내기"로 .json 파일 백업을 권장합니다.');
+            safeAlert('⚠️ 자동 저장 실패\n브라우저 저장 공간이 부족합니다.\n인쇄판 ⋯ → "현재 카드 내보내기"로 .json 파일 백업을 권장합니다.');
           }
         }
       }
@@ -6466,16 +6476,19 @@ export default function App() {
       if (e.isComposing) return;
       // 우선순위: 가장 안쪽/최근 열린 것부터 닫음
       if (editingImageCard) { setEditingImageCard(null); e.preventDefault(); return; }
+      if (showCardSettings) { setShowCardSettings(false); e.preventDefault(); return; }
+      if (cardMoreOpen) { setCardMoreOpen(false); e.preventDefault(); return; }
       if (showBulkEditor) { setShowBulkEditor(false); e.preventDefault(); return; }
       if (showCategoryManager) { setShowCategoryManager(false); e.preventDefault(); return; }
       if (showBundleLoader) { setShowBundleLoader(false); e.preventDefault(); return; }
       if (showUserManagement) { setShowUserManagement(false); e.preventDefault(); return; }
       if (showTutorial) { setShowTutorial(false); e.preventDefault(); return; }
       if (mobileSidebarOpen) { setMobileSidebarOpen(false); e.preventDefault(); return; }
+      if (profileMenuOpen) { setProfileMenuOpen(false); e.preventDefault(); return; }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [editingImageCard, showBulkEditor, showCategoryManager, showBundleLoader, showUserManagement, showTutorial, mobileSidebarOpen]);
+  }, [editingImageCard, showBulkEditor, showCategoryManager, showBundleLoader, showUserManagement, showTutorial, mobileSidebarOpen, profileMenuOpen, showCardSettings, cardMoreOpen]);
 
   // 사용자별 튜토리얼 1회 표시 (개인 - 브라우저별)
   useEffect(() => {
@@ -7550,7 +7563,7 @@ export default function App() {
               <div className="flex items-center justify-between px-5 py-4 border-b border-stone-200">
                 <div className="flex items-center gap-2">
                   <FolderOpen className="w-5 h-5 text-stone-700" />
-                  <h2 className="text-base font-bold text-stone-900">묶음 불러오기</h2>
+                  <h2 className="text-base font-bold text-stone-900">지난 인쇄 다시 쓰기</h2>
                 </div>
                 <button onClick={() => setShowBundleLoader(false)} className="p-2 hover:bg-stone-100 rounded-lg transition">
                   <X className="w-4 h-4 text-stone-600" />
@@ -7820,7 +7833,7 @@ export default function App() {
                     <div className="mt-6 bg-stone-50 rounded-lg p-3">
                       <p className="text-[11px] font-bold text-stone-700 mb-1">📤 파일 만들기</p>
                       <p className="text-[10px] text-stone-600 leading-relaxed">
-                        저장된 묶음에서 <Share2 className="w-3 h-3 inline mx-0.5" /> 아이콘을 누르거나, 사이드바 "현재 카드 내보내기"를 눌러서 .json 파일로 저장할 수 있어요.
+                        저장된 묶음에서 <Share2 className="w-3 h-3 inline mx-0.5" /> 아이콘을 누르거나, 인쇄판 ⋯ → "현재 카드 내보내기"를 눌러서 .json 파일로 저장할 수 있어요.
                       </p>
                     </div>
                   </div>
@@ -7845,187 +7858,95 @@ export default function App() {
         }
       `}</style>
 
-      {/* 상단 바 */}
+      {/* 상단 바: 로고 · 큰 갈래 탭(인쇄판·카테고리·말하는 판) · 이름 동그라미 메뉴 */}
       <header className="no-print sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-stone-200">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 sm:py-4 flex items-center justify-between gap-2 sm:gap-4">
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-shrink">
-            {/* 모바일 햄버거 버튼 */}
-            <button
-              onClick={() => setMobileSidebarOpen(true)}
-              className="md:hidden p-2 hover:bg-stone-100 rounded-md transition flex-shrink-0"
-              title="메뉴"
-              aria-label="메뉴 열기"
-            >
-              <Menu className="w-5 h-5 text-stone-700" />
-            </button>
-            <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl bg-white border border-stone-200 flex items-center justify-center shadow-sm overflow-hidden p-1 flex-shrink-0">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-2.5 sm:py-3 flex items-center gap-2 sm:gap-4">
+          <div className="hidden sm:flex items-center gap-2 min-w-0 flex-shrink-0">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-white border border-stone-200 flex items-center justify-center shadow-sm overflow-hidden p-1 flex-shrink-0">
               <img src={LOGO_DATA_URL} alt="검단ABA" className="w-full h-full object-contain" />
             </div>
-            <div className="min-w-0">
-              <h1 className="text-sm sm:text-base font-bold text-stone-900 leading-tight truncate">검단ABA AAC maker</h1>
-              <p className="hidden sm:block text-[11px] text-stone-500 leading-tight truncate">
-                언어행동연구소
-                {cards.length > 0 && (
-                  <>
-                    {' · '}
-                    <span className="font-semibold text-stone-700">{cards.length}장</span>
-                    {cards.filter(c => c.label.trim()).length < cards.length && (
-                      <span className="text-amber-600">
-                        {' '}(글자 {cards.filter(c => c.label.trim()).length}장)
-                      </span>
-                    )}
-                  </>
-                )}
-              </p>
-            </div>
+            <h1 className="hidden lg:block text-sm sm:text-base font-bold text-stone-900 leading-tight whitespace-nowrap">AAC maker</h1>
           </div>
 
-          <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0 flex-nowrap">
-            <div className="hidden md:flex items-center bg-stone-100 rounded-lg p-0.5">
+          {/* 큰 갈래 탭 */}
+          <div className="flex items-center gap-1 bg-stone-100 rounded-xl p-1 min-w-0 flex-1 sm:flex-none">
+            {[
+              ['print', FileDown, '인쇄판'],
+              ['library', Folder, '카테고리'],
+              ['board', Volume2, '말하는 판'],
+            ].map(([m, Icon, label]) => (
               <button
-                onClick={() => setView('edit')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${view === 'edit' ? 'bg-white shadow-sm text-stone-900' : 'text-stone-500 hover:text-stone-700'}`}
+                key={m}
+                onClick={() => setViewMode(m)}
+                aria-pressed={viewMode === m}
+                className={`flex-1 sm:flex-none px-1.5 sm:px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1 sm:gap-1.5 whitespace-nowrap ${
+                  viewMode === m ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-700'
+                }`}
               >
-                편집
+                <Icon className="w-4 h-4 flex-shrink-0" />
+                <span>{label}</span>
+                {m === 'print' && cards.length > 0 && <span className="hidden sm:inline tabular-nums opacity-70">{cards.length}</span>}
               </button>
-              <button
-                onClick={() => setView('preview')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${view === 'preview' ? 'bg-white shadow-sm text-stone-900' : 'text-stone-500 hover:text-stone-700'}`}
-              >
-                인쇄 미리보기
-              </button>
-            </div>
-            {/* 모바일: 편집/미리보기 단일 토글 버튼 */}
-            <button
-              onClick={() => setView(view === 'edit' ? 'preview' : 'edit')}
-              className="md:hidden p-2 hover:bg-stone-100 rounded-md transition"
-              title={view === 'edit' ? '인쇄 미리보기' : '편집으로'}
-            >
-              <Eye className="w-4 h-4 text-stone-700" />
-            </button>
-            <button
-              onClick={() => setShowBundleLoader(true)}
-              className="flex items-center gap-1.5 px-2 sm:px-3 py-2 bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-xs font-semibold rounded-lg shadow-sm transition relative"
-              title="저장된 묶음 / 파일 불러오기"
-            >
-              <FolderOpen className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">묶음 불러오기</span>
-              {history.filter(h => currentUser?.role === 'admin' || h.ownerUsername === currentUser?.email).length > 0 && (
-                <span className="absolute -top-1 -right-1 text-[9px] font-bold text-white bg-amber-500 rounded-full min-w-[16px] h-[16px] px-1 flex items-center justify-center tabular-nums">
-                  {history.filter(h => currentUser?.role === 'admin' || h.ownerUsername === currentUser?.email).length}
-                </span>
-              )}
-            </button>
-            <input
-              ref={importFileRef}
-              type="file"
-              accept="application/json,.json"
-              onChange={handleImportChange}
-              className="hidden"
-            />
+            ))}
+          </div>
 
-            {/* 구분선 */}
-            <div className="hidden sm:block h-6 w-px bg-stone-200 mx-1 flex-shrink-0" />
+          <div className="hidden sm:block flex-1" />
 
-            {/* 사용자 메뉴 */}
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${currentUser.role === 'admin' ? 'bg-amber-100' : 'bg-stone-200'}`}>
-                {currentUser.role === 'admin' ? (
-                  <Shield className="w-3.5 h-3.5 text-amber-700" />
-                ) : (
-                  <span className="text-[10px] font-bold text-stone-600">
-                    {(currentUser.name || currentUser.email || '?').charAt(0)}
-                  </span>
+          {/* 이름 동그라미 → 계정 관리 · 사용법 · 로그아웃 */}
+          <div className="relative flex-shrink-0" ref={profileMenuRef}>
+            <button
+              onClick={() => setProfileMenuOpen(o => !o)}
+              aria-expanded={profileMenuOpen}
+              aria-label="내 메뉴"
+              title={currentUser.name || currentUser.email}
+              className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold transition ${
+                profileMenuOpen ? 'ring-2 ring-pink-200' : ''
+              } ${currentUser.role === 'admin' ? 'bg-amber-100 text-amber-800' : 'bg-stone-200 text-stone-700'}`}
+            >
+              {(currentUser.name || currentUser.email || '?').charAt(0)}
+            </button>
+            {profileMenuOpen && (<>
+              <div className="absolute right-0 mt-2 z-40 w-56 rounded-xl border border-stone-200 bg-white shadow-lg p-1 text-sm" onClick={() => setProfileMenuOpen(false)}>
+                <div className="px-3 py-2 border-b border-stone-100 mb-1">
+                  <p className="font-bold text-stone-900 truncate">{currentUser.name || currentUser.email}</p>
+                  <p className="text-xs text-stone-500">{currentUser.role === 'admin' ? '관리자' : '선생님'} · {currentUser.email}</p>
+                </div>
+                {currentUser.role === 'admin' && (
+                  <button onClick={() => setShowUserManagement(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700">
+                    <Users className="w-4 h-4" /> 선생님 계정 관리
+                  </button>
                 )}
-              </div>
-              {/* 사용자 이름 - 넓은 화면에서만 표시, 좁으면 자동 숨김 */}
-              <div className="hidden md:block leading-tight pr-1 max-w-[80px] overflow-hidden">
-                <p className="text-[11px] font-bold text-stone-900 truncate whitespace-nowrap">{currentUser.name || currentUser.email}</p>
-                <p className="text-[9px] text-stone-500 whitespace-nowrap">
-                  {currentUser.role === 'admin' ? '관리자' : '선생님'}
-                </p>
-              </div>
-
-              {currentUser.role === 'admin' && (
-                <button
-                  onClick={() => setShowUserManagement(true)}
-                  className="p-1.5 hover:bg-stone-100 rounded-md transition flex-shrink-0"
-                  title="선생님 계정 관리"
-                >
-                  <Users className="w-3.5 h-3.5 text-stone-600" />
+                <button onClick={() => setShowTutorial(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700">
+                  <HelpCircle className="w-4 h-4" /> 사용법 보기
                 </button>
-              )}
-              <button
-                onClick={() => setShowTutorial(true)}
-                className="hidden sm:flex p-1.5 hover:bg-stone-100 rounded-md transition flex-shrink-0"
-                title="사용법 다시 보기"
-              >
-                <HelpCircle className="w-3.5 h-3.5 text-stone-600" />
-              </button>
-              <button
-                onClick={handleLogout}
-                className="p-1.5 hover:bg-red-50 hover:text-red-500 rounded-md transition text-stone-600 flex-shrink-0"
-                title="로그아웃"
-                aria-label="로그아웃"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-              </button>
-            </div>
+                <button onClick={handleLogout} className="w-full px-3 py-2 rounded-lg hover:bg-red-50 flex items-center gap-2 text-red-600">
+                  <LogOut className="w-4 h-4" /> 로그아웃
+                </button>
+              </div>
+            </>)}
           </div>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={handleImportChange}
+            className="hidden"
+          />
         </div>
       </header>
 
       <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 sm:py-6 grid grid-cols-12 gap-3 sm:gap-6 print:max-w-none print:p-0 print:m-0 print:block print:gap-0">
-        {/* 모바일 백드롭 */}
-        {mobileSidebarOpen && (
-          <div
-            className="no-print md:hidden fixed inset-0 bg-stone-900/50 backdrop-blur-sm z-40"
-            onClick={() => setMobileSidebarOpen(false)}
-          />
-        )}
-
-        {/* 왼쪽 설정 패널 - 데스크탑에선 sticky 사이드바, 모바일에선 슬라이드 패널 */}
-        <aside className={`no-print col-span-12 md:col-span-3 space-y-4 ${
-          mobileSidebarOpen
-            ? 'fixed inset-y-0 left-0 z-50 w-[85%] max-w-sm bg-stone-50 overflow-y-auto p-4 shadow-2xl md:static md:p-0 md:bg-transparent md:shadow-none md:overflow-visible'
-            : 'hidden md:block'
-        }`}>
-          {/* 모바일 사이드바 헤더 (닫기 버튼) */}
-          {mobileSidebarOpen && (
-            <div className="md:hidden flex items-center justify-between pb-3 border-b border-stone-200 mb-3">
-              <h2 className="text-base font-bold text-stone-900">메뉴</h2>
-              <button
-                onClick={() => setMobileSidebarOpen(false)}
-                className="p-2 hover:bg-stone-200 rounded-md transition"
-              >
-                <X className="w-5 h-5 text-stone-700" />
-              </button>
-            </div>
-          )}
-
-          <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden">
-            <button
-              onClick={() => setSettingsOpen(!settingsOpen)}
-              className="w-full flex items-center justify-between p-5 hover:bg-stone-50 transition"
-            >
-              <div className="flex items-center gap-2">
-                <Settings2 className="w-4 h-4 text-stone-700" />
-                <h2 className="text-sm font-bold text-stone-900">설정</h2>
-                {(doubleSided || cardRadius > 0 || safetyMargin > 0 || !showCutLines || cutLineStyle !== 'dashed') && (
-                  <span className="text-[10px] font-medium text-amber-700 bg-amber-50 rounded px-1.5 py-0.5">
-                    인쇄 옵션 적용 중
-                  </span>
-                )}
+        {/* 카드 설정 창 (예전 왼쪽 '설정' 칸 내용 그대로) — 인쇄판의 '카드 설정' 버튼으로 엶 */}
+        {showCardSettings && viewMode === 'print' && (
+          <div className="no-print fixed inset-0 z-50 bg-stone-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => setShowCardSettings(false)}>
+            <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[88vh] flex flex-col" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="카드 설정">
+              <div className="flex items-center justify-between px-5 py-3.5 border-b border-stone-200">
+                <h2 className="text-base font-bold text-stone-900 flex items-center gap-2"><Settings2 className="w-4 h-4" /> 카드 설정</h2>
+                <button onClick={() => setShowCardSettings(false)} className="p-2 hover:bg-stone-100 rounded-lg transition" aria-label="닫기">
+                  <X className="w-4 h-4 text-stone-600" />
+                </button>
               </div>
-              {settingsOpen ? (
-                <ChevronUp className="w-4 h-4 text-stone-400" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-stone-400" />
-              )}
-            </button>
-
-            {settingsOpen && (
-              <div className="px-5 pb-5 border-t border-stone-100 pt-4">
+              <div className="overflow-y-auto px-5 py-4">
             {/* 탭 헤더 */}
             <div className="flex gap-1 bg-stone-100 rounded-lg p-1 mb-4">
               <button
@@ -8326,201 +8247,15 @@ export default function App() {
               </div>
             )}
               </div>
-            )}
-          </div>
-
-          {/* 카드 정렬 */}
-          {cards.length > 1 && (
-            <div className="bg-white rounded-2xl border border-stone-200 p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <ArrowUpDown className="w-4 h-4 text-stone-700" />
-                <h2 className="text-sm font-bold text-stone-900">카드 정렬</h2>
+              <div className="px-5 py-3 border-t border-stone-200 flex justify-end">
+                <button onClick={() => setShowCardSettings(false)} className="px-5 py-2 bg-stone-900 hover:bg-stone-800 text-white text-sm font-bold rounded-lg transition">다 했어요</button>
               </div>
-              <div className="grid grid-cols-2 gap-1.5">
-                {[
-                  { id: 'default', label: '원래 순서', desc: '추가한대로' },
-                  { id: 'label', label: '가나다순', desc: 'ㄱ→ㅎ' },
-                  { id: 'category', label: '카테고리순', desc: '같은것끼리' },
-                  { id: 'shortest', label: '짧은 라벨', desc: '글자 적은순' },
-                ].map((opt) => (
-                  <button
-                    key={opt.id}
-                    onClick={() => setSortMode(opt.id)}
-                    className={`px-2 py-2 rounded-lg text-xs font-semibold transition border ${
-                      sortMode === opt.id
-                        ? 'bg-amber-50 border-amber-300 text-amber-900'
-                        : 'bg-white border-stone-200 text-stone-600 hover:border-stone-300'
-                    }`}
-                  >
-                    <div>{opt.label}</div>
-                    <div className="text-[10px] font-normal opacity-70">{opt.desc}</div>
-                  </button>
-                ))}
-              </div>
-              {sortMode !== 'default' && (
-                <p className="text-[10px] text-amber-700 bg-amber-50 rounded px-2 py-1.5 mt-2 leading-snug">
-                  💡 정렬된 순서대로 인쇄/저장됩니다 · 원본 카드 순서는 그대로 유지
-                </p>
-              )}
             </div>
-          )}
-
-          {/* 카드 액션 (카드가 있을 때만) */}
-          {cards.length > 0 && (
-            <div className="bg-white rounded-2xl border border-stone-200 p-5 space-y-2">
-              <button
-                onClick={() => setShowBulkEditor(true)}
-                className="w-full py-2 text-xs font-medium text-stone-700 hover:bg-amber-50 hover:text-amber-700 border border-stone-200 hover:border-amber-200 rounded-lg transition flex items-center justify-center gap-1.5"
-              >
-                <Edit3 className="w-3 h-3" />
-                일괄 라벨 편집
-              </button>
-              <button
-                onClick={exportCurrent}
-                className="w-full py-2 text-xs font-medium text-blue-600 hover:bg-blue-50 border border-blue-200 rounded-lg transition flex items-center justify-center gap-1.5"
-              >
-                <Share2 className="w-3 h-3" />
-                현재 카드 내보내기
-              </button>
-              <button
-                onClick={clearAll}
-                className="w-full py-2 text-xs font-medium text-red-600 hover:bg-red-50 border border-red-200 rounded-lg transition flex items-center justify-center gap-1.5"
-              >
-                <Trash2 className="w-3 h-3" />
-                전체 삭제
-              </button>
-            </div>
-          )}
-
-          {/* 카테고리 패널 (접기 가능) — 라이브러리 도입으로 숨김. 카테고리 관리는 상단 '카테고리' 탭에서. */}
-          {false && (
-          <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden">
-            <button
-              onClick={() => setCategoryOpen(!categoryOpen)}
-              className="w-full flex items-center justify-between p-5 hover:bg-stone-50 transition"
-            >
-              <div className="flex items-center gap-2">
-                <Folder className="w-4 h-4 text-stone-700" />
-                <h2 className="text-sm font-bold text-stone-900">카테고리</h2>
-                {categories.length > 0 && (
-                  <span className="text-[10px] font-bold text-white bg-amber-500 rounded-full px-1.5 py-0.5 tabular-nums min-w-[18px] text-center">
-                    {categories.length}
-                  </span>
-                )}
-                {filterCategoryId && (
-                  <span className="text-[10px] font-medium text-amber-700 bg-amber-50 rounded px-1.5 py-0.5">
-                    필터 중
-                  </span>
-                )}
-              </div>
-              {categoryOpen ? (
-                <ChevronUp className="w-4 h-4 text-stone-400" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-stone-400" />
-              )}
-            </button>
-
-            {categoryOpen && (
-              <div className="px-5 pb-5 border-t border-stone-100">
-                <div className="flex justify-end mb-3 mt-3">
-                  <button
-                    onClick={() => setShowCategoryManager(true)}
-                    className="p-1.5 hover:bg-stone-100 rounded transition"
-                    title="카테고리 관리"
-                  >
-                    <Settings2 className="w-3.5 h-3.5 text-stone-600" />
-                  </button>
-                </div>
-
-            {categories.length === 0 ? (
-              <button
-                onClick={() => setShowCategoryManager(true)}
-                className="w-full py-3 text-xs font-medium text-stone-500 hover:text-amber-700 border-2 border-dashed border-stone-200 hover:border-amber-300 hover:bg-amber-50 rounded-lg transition flex items-center justify-center gap-1.5"
-              >
-                <FolderPlus className="w-3.5 h-3.5" />
-                카테고리 만들기
-              </button>
-            ) : (
-              <>
-                {/* 필터 버튼들 */}
-                <div className="space-y-1">
-                  <button
-                    onClick={() => setFilterCategoryId(null)}
-                    className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-medium transition flex items-center justify-between ${
-                      filterCategoryId === null
-                        ? 'bg-stone-900 text-white'
-                        : 'bg-stone-50 hover:bg-stone-100 text-stone-700'
-                    }`}
-                  >
-                    <span>전체 카드</span>
-                    <span className="text-[10px] opacity-70 tabular-nums">{cards.length}</span>
-                  </button>
-                  {categories.map((c) => {
-                    const count = cards.filter(card => card.categoryId === c.id).length;
-                    return (
-                      <button
-                        key={c.id}
-                        onClick={() => setFilterCategoryId(c.id === filterCategoryId ? null : c.id)}
-                        className={`w-full text-left px-2.5 py-1.5 rounded text-xs font-medium transition flex items-center gap-2 ${
-                          filterCategoryId === c.id
-                            ? 'bg-stone-900 text-white'
-                            : 'bg-stone-50 hover:bg-stone-100 text-stone-700'
-                        }`}
-                      >
-                        <span
-                          className="w-3 h-3 rounded-full flex-shrink-0"
-                          style={{ backgroundColor: c.color }}
-                        />
-                        <span className="flex-1 truncate">{c.name}</span>
-                        <span className="text-[10px] opacity-70 tabular-nums flex-shrink-0">{count}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                {filterCategoryId && (
-                  <p className="text-[10px] text-amber-700 bg-amber-50 rounded px-2 py-1 mt-2 text-center">
-                    💡 필터링 중 - 인쇄 시 보이는 카드만 출력됩니다
-                  </p>
-                )}
-              </>
-            )}
-              </div>
-            )}
           </div>
-          )}
-
-        </aside>
+        )}
 
         {/* 메인 영역 */}
-        <main className="col-span-12 md:col-span-9">
-          {/* 인쇄판 ⇄ 라이브러리 전환 토글 */}
-          <div className="no-print flex items-center gap-1 bg-stone-100 rounded-xl p-1 mb-4">
-            <button
-              onClick={() => setViewMode('print')}
-              className={`flex-1 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 ${
-                viewMode === 'print' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-700'
-              }`}
-            >
-              <FileDown className="w-4 h-4" /> 인쇄판
-              {cards.length > 0 && <span className="tabular-nums opacity-70">{cards.length}</span>}
-            </button>
-            <button
-              onClick={() => setViewMode('library')}
-              className={`flex-1 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 ${
-                viewMode === 'library' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-700'
-              }`}
-            >
-              <Folder className="w-4 h-4" /> 카테고리
-            </button>
-            <button
-              onClick={() => setViewMode('board')}
-              className={`flex-1 px-3 py-2 rounded-lg text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 ${
-                viewMode === 'board' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500 hover:text-stone-700'
-              }`}
-            >
-              <Volume2 className="w-4 h-4" /> 말하는 판
-            </button>
-          </div>
+        <main className="col-span-12">
 
           {viewMode === 'board' ? (
             <SpeakingBoardView
@@ -8565,61 +8300,83 @@ export default function App() {
               onMoveSelected={moveSelectedLibraryCards}
               cardSearch={librarySearch}
               setCardSearch={setLibrarySearch}
+              isAdmin={isAdmin}
             />
             </>
           ) : view === 'edit' ? (
             <>
-              {/* 업로드 영역 - 카드 있으면 작게, 없으면 크게 */}
-              <div
-                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={onDrop}
-                onClick={() => fileInputRef.current?.click()}
-                className={`no-print cursor-pointer rounded-2xl border-2 border-dashed transition text-center ${
-                  cards.length > 0
-                    ? 'p-2 sm:p-3 mb-3'  // 카드 있을 때: 작게
-                    : 'p-4 sm:p-8 mb-4 sm:mb-6'  // 카드 없을 때: 크게
-                } ${
-                  isDragging
-                    ? 'border-amber-400 bg-amber-50'
-                    : 'border-stone-300 bg-white hover:border-stone-400 hover:bg-stone-50'
-                }`}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,image/gif"
-                  multiple
-                  onChange={onFileChange}
-                  className="hidden"
-                />
-                {cards.length > 0 ? (
-                  // 작은 버전: 한 줄로 표시
-                  <div className="flex items-center justify-center gap-2 text-stone-600 hover:text-stone-800">
-                    <Plus className="w-4 h-4" strokeWidth={2.5} />
-                    <span className="text-xs sm:text-sm font-semibold">이미지 추가</span>
-                    <span className="hidden sm:inline text-[10px] text-stone-400">(드래그/클릭, 여러 장 가능)</span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                multiple
+                onChange={onFileChange}
+                className="hidden"
+              />
+              {cards.length > 0 ? (
+                // 카드 있을 때: 버튼 한 줄 (이미지 추가 · 지난 인쇄 다시 쓰기 · 미리보기 · 인쇄)
+                <div className="no-print flex items-center gap-2 mb-4 flex-wrap">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                    onDragLeave={() => setIsDragging(false)}
+                    onDrop={onDrop}
+                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 border-dashed text-sm font-semibold transition ${
+                      isDragging ? 'border-amber-400 bg-amber-50 text-amber-800' : 'border-stone-300 bg-white text-stone-700 hover:border-stone-400 hover:bg-stone-50'
+                    }`}
+                    title="눌러서 고르거나, 그림 파일을 여기로 끌어다 놓아요 (여러 장 가능)"
+                  >
+                    <Plus className="w-4 h-4" strokeWidth={2.5} /> 이미지 추가
+                  </button>
+                  <button
+                    onClick={() => setShowBundleLoader(true)}
+                    className="relative flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-sm font-semibold rounded-lg transition"
+                    title="예전에 인쇄한 카드 묶음을 다시 넣어요"
+                  >
+                    <History className="w-4 h-4" /> 지난 인쇄 다시 쓰기
+                    {visibleHistory.length > 0 && (
+                      <span className="absolute -top-1.5 -right-1.5 text-[10px] font-bold text-white bg-amber-500 rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center tabular-nums">
+                        {visibleHistory.length}
+                      </span>
+                    )}
+                  </button>
+                  <div className="flex-1" />
+                  <button
+                    onClick={() => setShowCardSettings(true)}
+                    className="relative flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-sm font-semibold rounded-lg transition"
+                    title="카드 크기 · 글자 · 자르는 선 · 양면 인쇄"
+                  >
+                    <Settings2 className="w-4 h-4" /> 카드 설정
+                    {(doubleSided || cardRadius > 0 || safetyMargin > 0 || !showCutLines || cutLineStyle !== 'dashed') && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full border-2 border-white" title="인쇄 옵션 적용 중" />
+                    )}
+                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => setCardMoreOpen(o => !o)}
+                      aria-expanded={cardMoreOpen}
+                      aria-label="더 보기 (일괄 라벨 편집 · 내보내기 · 전체 삭제)"
+                      title="더 보기"
+                      className={`w-10 h-[38px] rounded-lg border flex items-center justify-center transition ${cardMoreOpen ? 'bg-stone-100 border-stone-400' : 'bg-white border-stone-200 hover:bg-stone-50'}`}
+                    >
+                      <MoreHorizontal className="w-4 h-4 text-stone-700" />
+                    </button>
+                    {cardMoreOpen && (<>
+                      <div className="fixed inset-0 z-20" onClick={() => setCardMoreOpen(false)} />
+                      <div className="absolute right-0 mt-1 z-30 w-48 rounded-xl border border-stone-200 bg-white shadow-lg p-1 text-sm" onClick={() => setCardMoreOpen(false)}>
+                        <button onClick={() => setShowBulkEditor(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700"><Edit3 className="w-4 h-4" /> 일괄 라벨 편집</button>
+                        <button onClick={exportCurrent} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700"><Share2 className="w-4 h-4" /> 현재 카드 내보내기</button>
+                        <div className="my-1 border-t border-stone-100" />
+                        <button onClick={clearAll} className="w-full px-3 py-2 rounded-lg hover:bg-red-50 flex items-center gap-2 text-red-600"><Trash2 className="w-4 h-4" /> 전체 삭제</button>
+                      </div>
+                    </>)}
                   </div>
-                ) : (
-                  // 큰 버전: 처음 사용자용
-                  <>
-                    <div className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-2 sm:mb-3 rounded-full bg-stone-100 flex items-center justify-center">
-                      <Upload className="w-4 h-4 sm:w-5 sm:h-5 text-stone-600" strokeWidth={2} />
-                    </div>
-                    <p className="text-xs sm:text-sm font-semibold text-stone-800 mb-1">
-                      <span className="hidden sm:inline">이미지를 끌어다 놓거나 클릭해서 선택</span>
-                      <span className="sm:hidden">탭해서 이미지 선택</span>
-                    </p>
-                    <p className="text-[11px] sm:text-xs text-stone-500">
-                      여러 장 한꺼번에 가능 · 파일명이 자동으로 라벨이 됩니다
-                    </p>
-                  </>
-                )}
-              </div>
-
-              {/* 인쇄 버튼 (카드 있을 때만) - 누르면 이름 물어보고 저장+인쇄 */}
-              {cards.length > 0 && (
-                <div className="no-print flex items-center justify-center gap-2 mb-4 flex-wrap">
+                  <button
+                    onClick={() => setView('preview')}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-sm font-semibold rounded-lg transition"
+                  >
+                    <Eye className="w-4 h-4" /> 미리보기
+                  </button>
                   <button
                     onClick={() => {
                       if (visibleCards.length === 0) { safeAlert('인쇄할 카드가 없습니다.'); return; }
@@ -8634,11 +8391,35 @@ export default function App() {
                         doActualPrint();
                       }, 400);
                     }}
-                    className="flex items-center justify-center gap-2 px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
+                    className="flex items-center justify-center gap-2 px-5 py-2 bg-stone-900 hover:bg-stone-800 text-white text-sm font-semibold rounded-lg shadow-sm transition"
                   >
                     <FileDown className="w-4 h-4" />
                     인쇄 / PDF 저장
                   </button>
+                </div>
+              ) : (
+                // 카드 없을 때: 크게 (처음 사용자용)
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={onDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`no-print cursor-pointer rounded-2xl border-2 border-dashed transition text-center p-4 sm:p-8 mb-4 sm:mb-6 ${
+                    isDragging
+                      ? 'border-amber-400 bg-amber-50'
+                      : 'border-stone-300 bg-white hover:border-stone-400 hover:bg-stone-50'
+                  }`}
+                >
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-2 sm:mb-3 rounded-full bg-stone-100 flex items-center justify-center">
+                    <Upload className="w-4 h-4 sm:w-5 sm:h-5 text-stone-600" strokeWidth={2} />
+                  </div>
+                  <p className="text-xs sm:text-sm font-semibold text-stone-800 mb-1">
+                    <span className="hidden sm:inline">이미지를 끌어다 놓거나 클릭해서 선택</span>
+                    <span className="sm:hidden">탭해서 이미지 선택</span>
+                  </p>
+                  <p className="text-[11px] sm:text-xs text-stone-500">
+                    여러 장 한꺼번에 가능 · 글자는 카드 아래 칸에 적어요
+                  </p>
                 </div>
               )}
 
@@ -8681,12 +8462,22 @@ export default function App() {
                     사진 추가해서 시작
                   </button>
                   <p className="text-[11px] text-stone-400 mt-3">클릭하면 사진을 고를 수 있어요</p>
+                  {visibleHistory.length > 0 && (
+                    <button
+                      onClick={() => setShowBundleLoader(true)}
+                      className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-sm font-semibold rounded-lg transition"
+                    >
+                      <History className="w-4 h-4" /> 지난 인쇄 다시 쓰기 ({visibleHistory.length})
+                    </button>
+                  )}
                 </div>
               ) : (
                 <>
-                  {/* 카드 검색 (카드 5장 이상일 때만) */}
+                  {/* 카드 검색 (5장 이상) + 정렬 (2장 이상) — 한 줄 */}
+                  {cards.length > 1 && (
+                  <div className="mb-3 flex items-stretch gap-2 flex-wrap">
                   {cards.length >= 5 && (
-                    <div className="mb-3 flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-2">
+                    <div className="flex-1 min-w-[180px] flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-2">
                       <Search className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" />
                       <input
                         type="text"
@@ -8710,6 +8501,28 @@ export default function App() {
                         </>
                       )}
                     </div>
+                  )}
+                    {/* 정렬 (예전 왼쪽 '카드 정렬' 칸) */}
+                    <label className={`flex items-center gap-1.5 text-sm text-stone-600 ${cards.length >= 5 ? '' : 'ml-auto'}`}>
+                      <ArrowUpDown className="w-4 h-4 text-stone-500" />
+                      <select
+                        value={sortMode}
+                        onChange={(e) => setSortMode(e.target.value)}
+                        aria-label="카드 정렬"
+                        className={`px-2.5 py-2 bg-white border rounded-lg text-sm font-semibold outline-none cursor-pointer ${sortMode !== 'default' ? 'border-amber-300 text-amber-900 bg-amber-50' : 'border-stone-200 text-stone-700'}`}
+                      >
+                        <option value="default">원래 순서</option>
+                        <option value="label">가나다순</option>
+                        <option value="category">카테고리순</option>
+                        <option value="shortest">짧은 라벨순</option>
+                      </select>
+                    </label>
+                  </div>
+                  )}
+                  {sortMode !== 'default' && cards.length > 1 && (
+                    <p className="no-print text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1.5 -mt-1 mb-3 leading-snug">
+                      💡 정렬된 순서대로 인쇄/저장됩니다 · 원본 카드 순서는 그대로 유지 · 끌어서 순서 바꾸기는 '원래 순서'에서만 돼요
+                    </p>
                   )}
 
                   {/* 검색 결과 없음 */}
@@ -8758,6 +8571,9 @@ export default function App() {
               {cards.length === 0 ? (
                 <div className="text-center py-16 text-stone-400">
                   <p className="text-sm">미리볼 카드가 없습니다</p>
+                  <button onClick={() => setView('edit')} className="no-print mt-3 inline-flex items-center gap-1.5 px-4 py-2 bg-white border border-stone-200 text-stone-700 text-sm font-semibold rounded-lg">
+                    <ChevronLeft className="w-4 h-4" /> 편집으로
+                  </button>
                 </div>
               ) : (
                 <>
@@ -8771,6 +8587,18 @@ export default function App() {
                       </div>
                     )}
                     <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setView('edit')}
+                        className="flex items-center gap-1.5 px-4 py-2.5 bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-sm font-semibold rounded-lg transition"
+                      >
+                        <ChevronLeft className="w-4 h-4" /> 편집으로
+                      </button>
+                      <button
+                        onClick={() => setShowCardSettings(true)}
+                        className="flex items-center gap-1.5 px-4 py-2.5 bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-sm font-semibold rounded-lg transition"
+                      >
+                        <Settings2 className="w-4 h-4" /> 카드 설정
+                      </button>
                       <button
                         onClick={() => {
                           if (visibleCards.length === 0) { safeAlert('인쇄할 카드가 없습니다.'); return; }
