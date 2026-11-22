@@ -4773,7 +4773,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     return () => { try { mq.removeEventListener('change', on); } catch { try { mq.removeListener(on); } catch {} } };
   }, []);
   const [showVoice, setShowVoice] = useState(false); // 목소리 고르기 창
-  const [showLibrary, setShowLibrary] = useState(false); // 자료실
   // 영상 소리 끄기 (이 기기에서 기억)
   const [videoMuted, setVideoMuted] = useState(() => { try { return localStorage.getItem('aac_video_muted') === '1'; } catch { return false; } });
   const toggleVideoMuted = () => setVideoMuted(m => {
@@ -4986,6 +4985,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (!safeConfirm(`'${k.name}'을(를) 아이 목록에서 뺄까요?\n판은 그대로 남아요.`)) return;
     saveKids(kids.filter(x => x.id !== kidId));
     setKidId('all');
+    setHomeStep('kids');
   };
 
   // 문장 틀에 칸 넣기 (맞는 색 → 맞는 낱말 → 다 채우면 문장을 읽고 다음 그림으로)
@@ -5089,14 +5089,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   // 아이별 자주 쓰는 판 (아이 목록에 함께 저장: kid.fav = [판 id])
   const curKid = kidId === 'all' ? null : kids.find(k => k.id === kidId) || null;
   const favIds = (curKid && Array.isArray(curKid.fav)) ? curKid.fav : [];
-  const favBoards = favIds.map(id => boards.find(b => b.id === id) || builtins.find(b => b.id === id && !b.unlisted)).filter(Boolean);
-  const isFav = !!(activeId && favIds.includes(activeId));
-  const toggleFav = () => {
-    if (!curKid || !activeId) return;
-    const next = isFav ? favIds.filter(x => x !== activeId) : [...favIds, activeId];
-    saveKids(kids.map(k => k.id === curKid.id ? { ...k, fav: next } : k));
-  };
-  // 아이 화면에서 ☆ 바로 누르기: 그 판을 자주 쓰는 판에 넣고 빼기
+  // 판 고르기 창의 ☆: 그 판을 지금 아이의 자주 쓰는 판에 넣고 빼기
   const toggleFavFor = (boardId) => {
     if (!curKid || !boardId) return;
     const cur = Array.isArray(curKid.fav) ? curKid.fav : [];
@@ -5756,6 +5749,10 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <div className="flex items-center gap-2">
             <button onClick={() => setHomeStep('kids')} className="flex items-center gap-1 text-sm font-bold text-stone-500 px-2 py-1.5 rounded-lg hover:bg-stone-100"><ChevronLeft className="w-4 h-4" /> 아이</button>
             <b className="text-xl text-stone-900 truncate">{curKid.name}</b>
+            <div className="flex-1" />
+            <button onClick={removeKid} className="flex-none flex items-center gap-1 text-xs font-bold text-stone-500 px-2.5 py-1.5 rounded-lg border border-stone-200 bg-white hover:bg-stone-50">
+              <X className="w-3.5 h-3.5" /> 아이 목록에서 빼기
+            </button>
           </div>
           {/* 아이 화면: 자주 쓰는 판만 크게 + '판 더 넣기' (넣고 빼기는 판 고르기 창의 ☆) */}
           <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))' }}>
@@ -5812,7 +5809,11 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       {home && mode === 'use' ? renderHome() : (<>
       {/* 위 도구 줄: 판 이름 · 아이 · 크게 보기 · ☰ */}
       <div className="flex items-center gap-2">
-        <button onClick={() => { setPickQ(''); setPickArea(null); setShowPicker(true); }}
+        <button onClick={() => {
+            // 아이를 골랐으면 그 아이 화면(자주 쓰는 판)으로, '모든 아이'면 전체 판 고르기 창
+            if (curKid) { setMode('use'); setHomeStep('favs'); setHome(true); return; }
+            setPickQ(''); setPickArea(null); setShowPicker(true);
+          }}
           className="flex-1 min-w-0 flex items-center gap-2 rounded-xl border-2 bg-white pl-1.5 pr-2.5 py-1 text-left" style={{ borderColor: BOARD_PINK }} aria-haspopup="dialog">
           {(() => { const th = board?.thumb || (board && (board.cells || []).map((c, i) => cellView(c, i).image).find(Boolean)); return th
             ? <img src={th} alt="" className="w-8 h-8 rounded-md object-contain bg-white flex-none" draggable={false} />
@@ -5835,8 +5836,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           {menuOpen && (<>
             <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
             <div className="absolute right-0 mt-1 z-30 w-56 rounded-xl border border-stone-200 bg-white shadow-lg p-1 text-sm" onClick={() => setMenuOpen(false)}>
-              {curKid && board && <button onClick={toggleFav} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 font-bold" style={{ color: '#9A6B00' }}>{isFav ? '★' : '☆'} {curKid.name} 자주 쓰는 판{isFav ? '에서 빼기' : '에 넣기'}</button>}
-              {curKid && board && <div className="my-1 border-t border-stone-100" />}
               {board && <button onClick={() => {
                 if (board.builtin) { if (safeConfirm('기본 판은 그대로 두고, 내 판으로 복사해서 고쳐요.\n복사할까요?')) copyBuiltin(); return; }
                 setMode('edit');
@@ -5847,8 +5846,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               <div className="my-1 border-t border-stone-100" />
               <button onClick={addBoard} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Plus className="w-4 h-4" /> 새 판</button>
               <button onClick={() => setShowImport(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Upload className="w-4 h-4" /> 칩판 넣기</button>
-              <button onClick={() => setShowLibrary(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><FolderOpen className="w-4 h-4" /> 자료실</button>
-              {kidId !== 'all' && <button onClick={removeKid} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-500"><X className="w-4 h-4" /> 아이 빼기 ({kidName})</button>}
               {isAdmin && <div className="my-1 border-t border-stone-100" />}
               {isAdmin && <button onClick={() => setShowBuiltinUpload(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2" style={{ color: '#993556' }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>}
             </div>
@@ -5866,7 +5863,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           {/* 모드 줄 — 판 고치기·칸 숨기기 때만 */}
           {mode !== 'use' && <div className="flex flex-wrap items-center gap-2">
             <div className="flex bg-stone-100 rounded-lg p-0.5">
-              {[['use', '수업', Volume2], ['edit', '판 고치기', Pencil], ['hide', '칸 숨기기', EyeOff]].map(([m, t, Icon]) => (
+              {[['edit', '판 고치기', Pencil], ['hide', '칸 숨기기', EyeOff]].map(([m, t, Icon]) => (
                 <button key={m} onClick={() => {
                   if (m === 'edit' && board.builtin) {
                     if (safeConfirm('기본 판은 그대로 두고, 내 판으로 복사해서 고쳐요.\n복사할까요?')) copyBuiltin();
@@ -6013,7 +6010,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       )}
 
       {showVoice && <VoiceModal rate={rate} setRate={setRate} onClose={() => setShowVoice(false)} />}
-      {showLibrary && <LibraryModal isAdmin={isAdmin} onClose={() => setShowLibrary(false)} />}
       {renderPracticeSettings()}
       {showPicker && (() => {
         const { listed, areas, areaOf } = areaInfo();
@@ -6059,10 +6055,6 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
         } else {
           const a = areas.find(x => x.k === curArea) || areas[0];
           body = (<>
-            {curKid && (<>
-              <h4 className="text-xs font-bold mt-3 mb-1.5" style={{ color: '#9A6B00' }}>⭐ {curKid.name} 자주 쓰는 판</h4>
-              {favBoards.length ? grid(favBoards) : <p className="text-sm text-stone-400">아직 없어요. 아래 판 오른쪽의 ☆을 누르면 여기에 모여요.</p>}
-            </>)}
             <div className="flex gap-1.5 overflow-x-auto py-2.5 mt-1">
               {areas.map(x => (
                 <button key={x.k} onClick={() => setPickArea(x.k)} aria-pressed={x.k === a?.k}
@@ -6218,6 +6210,7 @@ export default function App() {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false); // 위쪽 이름 동그라미 메뉴
   const [showCardSettings, setShowCardSettings] = useState(false); // 인쇄판: 카드 설정 창
   const [cardMoreOpen, setCardMoreOpen] = useState(false); // 인쇄판: ⋯ (일괄 편집·내보내기·전체 삭제)
+  const [showLibraryModal, setShowLibraryModal] = useState(false); // 자료실 (평가지·안내문 PDF) — 이름 메뉴에서 엶
   const profileMenuRef = useRef(null);
   // 메뉴 바깥을 누르면 닫힘 (위쪽 바가 흐림 효과라 덮개 방식은 바 안에서만 먹어서 이렇게 처리)
   useEffect(() => {
@@ -7507,6 +7500,9 @@ export default function App() {
         />
       )}
 
+      {/* 자료실 (평가지·안내문 PDF) */}
+      {showLibraryModal && <LibraryModal isAdmin={isAdmin} onClose={() => setShowLibraryModal(false)} />}
+
       {/* 카테고리 관리 모달 */}
       {showCategoryManager && (
         <CategoryManager
@@ -7916,6 +7912,9 @@ export default function App() {
                     <Users className="w-4 h-4" /> 선생님 계정 관리
                   </button>
                 )}
+                <button onClick={() => setShowLibraryModal(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700">
+                  <FolderOpen className="w-4 h-4" /> 자료실
+                </button>
                 <button onClick={() => setShowTutorial(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-700">
                   <HelpCircle className="w-4 h-4" /> 사용법 보기
                 </button>
