@@ -3763,6 +3763,8 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
         ...(Array.isArray(b.cellSets) && b.cellSets.length ? { cellSets: b.cellSets, cellSetDefault: b.cellSetDefault || 0 } : {}),
         ...(b.sort ? { sort: true, ...(Array.isArray(b.sortDefault) ? { sortDefault: b.sortDefault } : {}) } : {}),
         ...(b.kinds ? { kinds: b.kinds } : {}),
+        ...(b.frameStep ? { frameStep: true } : {}),
+        ...(b.showLabel === false ? { showLabel: false } : {}),
         ...(b.frame ? { frame: b.frame, frameFixed: b.frameFixed || {}, frameWho: b.frameWho || [] } : {}) }));
       if (!ok) fail++;
     }
@@ -3788,14 +3790,24 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
       ...(thumbs[b.id] ? { thumb: thumbs[b.id] } : {}),
       ...((b.pages || []).some(pg => Array.isArray(pg?.answer) && pg.answer.length) ? { ans: true } : {}),
       ...((b.pages || []).some(pg => pg && (pg.sharedVideo || pg.videoFile)) ? { vid: true } : {}) }));
-    // 새 파일에 없는 예전 판은 지움
     const ids = new Set(list.map(b => b.id));
+    const addMode = data?.mode === 'add';
     const prev = await sharedGet(SHARED_INDEX_KEY);
-    try { for (const o of (JSON.parse(prev.value || '[]') || [])) if (o && o.id && !ids.has(o.id)) await sharedDelete(SHARED_BOARD_KEY(o.id)); } catch {}
-    const okIdx = await sharedSet(SHARED_INDEX_KEY, JSON.stringify(index));
+    let prevList = [];
+    try { prevList = (JSON.parse(prev.value || '[]') || []).filter(o => o && o.id); } catch { prevList = []; }
+    if (addMode && prev.error) { setBusy(''); safeAlert('지금 올라가 있는 기본 판 목록을 불러오지 못했어요.\n기존 판이 지워지지 않게 멈췄어요. 잠시 뒤 다시 올려 주세요.'); return; }
+    let finalIndex = index;
+    if (addMode) {
+      // 더하기: 예전 판은 그대로 두고, 같은 이름(id)의 판만 새것으로 바꿈
+      finalIndex = [...prevList.filter(o => !ids.has(o.id)), ...index];
+    } else {
+      // 새 파일에 없는 예전 판은 지움
+      for (const o of prevList) if (!ids.has(o.id)) await sharedDelete(SHARED_BOARD_KEY(o.id));
+    }
+    const okIdx = await sharedSet(SHARED_INDEX_KEY, JSON.stringify(finalIndex));
     setBusy('');
     if (!okIdx) { safeAlert('판 목록을 저장하지 못했어요. 다시 시도해 주세요.'); return; }
-    safeAlert(`기본 판 ${list.filter(b => !b.unlisted).length - fail}개를 올렸어요.` + (fail ? `\n${fail}개는 올라가지 않았어요. 다시 올려 주세요.` : '')
+    safeAlert((addMode ? `기본 판 ${list.filter(b => !b.unlisted).length - fail}개를 더했어요. (예전 기본 판 ${prevList.filter(o => !ids.has(o.id) && !o.unlisted).length}개는 그대로예요)` : `기본 판 ${list.filter(b => !b.unlisted).length - fail}개를 올렸어요.`) + (fail ? `\n${fail}개는 올라가지 않았어요. 다시 올려 주세요.` : '')
       + (vidJobs.length ? `\n영상 ${vidJobs.length - vidMissing - vidFail}개를 올렸어요.` : '')
       + (vidMissing ? `\n영상 ${vidMissing}개는 고르지 않았어요. 예전에 올린 영상이 있으면 그대로 나와요.` : '')
       + (vidFail ? `\n영상 ${vidFail}개는 올라가지 않았어요. 다시 올려 주세요.` : ''));
@@ -4739,6 +4751,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       if (o && Array.isArray(o.cellSets) && o.cellSets.length) extra = { ...extra, cellSets: o.cellSets, cellSetDefault: o.cellSetDefault || 0 };
       if (o && o.sort) extra = { ...extra, sort: true, ...(Array.isArray(o.sortDefault) ? { sortDefault: o.sortDefault } : {}) };
       if (o && o.kinds) extra = { ...extra, kinds: o.kinds };
+      if (o && o.frameStep) extra = { ...extra, frameStep: true };
+      if (o && o.showLabel === false) extra = { ...extra, showLabel: false }; // 그림에 글자가 이미 들어간 카드
       if (o && o.frame) extra = { ...extra, frame: o.frame, frameFixed: o.frameFixed || {}, frameWho: o.frameWho || [] };
     } catch { cells = null; }
     if (!cells) { builtinLoading.current[id] = false; if (r.error) safeAlert('기본 판을 불러오지 못했어요. 잠시 뒤 다시 골라 주세요.'); return; }
@@ -4783,7 +4797,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   });
   const [qOn, setQOn] = useState([]); // 누른 질문 번호들 → 그 질문의 답 칸만 보임
   // 정답 연습: 쪽마다 정답(page.answer = 낱말 목록)이 있는 이야기 판에서 맞았는지 알려 줌
-  const [practice, setPractice] = useState(() => { try { return localStorage.getItem('aac_practice') === '1'; } catch { return false; } });
+  const [practiceRaw, setPractice] = useState(() => { try { return localStorage.getItem('aac_practice') === '1'; } catch { return false; } });
   const [choiceN, setChoiceN] = useState(() => { try { return parseInt(localStorage.getItem('aac_choice_n') || '0', 10) || 0; } catch { return 0; } });
   const [tries, setTries] = useState({ wrong: [], solved: false });
   const [score, setScore] = useState({});
@@ -4797,8 +4811,11 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const [picked, setPicked] = useState(false); // 여러 장 함께: 그림을 골랐는지
   const advanceTimer = useRef(null);
   useEffect(() => { try { localStorage.setItem('aac_sort_many', sortMany ? '1' : '0'); } catch {} }, [sortMany]);
-  useEffect(() => { try { localStorage.setItem('aac_practice', practice ? '1' : '0'); } catch {} }, [practice]);
+  useEffect(() => { try { localStorage.setItem('aac_practice', practiceRaw ? '1' : '0'); } catch {} }, [practiceRaw]);
   useEffect(() => { try { localStorage.setItem('aac_choice_n', String(choiceN)); } catch {} }, [choiceN]);
+  // 두 단계 판의 결과 고르기 보기 수 (따로 기억, 처음엔 4개)
+  const [choiceStepN, setChoiceStepN] = useState(() => { try { const v = localStorage.getItem('aac_choice_step_n'); return v === null ? 4 : (parseInt(v, 10) || 0); } catch { return 4; } });
+  useEffect(() => { try { localStorage.setItem('aac_choice_step_n', String(choiceStepN)); } catch {} }, [choiceStepN]);
   useEffect(() => { setStoryPage(0); setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); setScore({}); setMissCount({}); setShowResult(false); setPicked(false); }, [activeId]);
   useEffect(() => () => { if (advanceTimer.current) clearTimeout(advanceTimer.current); }, []);
   useEffect(() => { setSentence([]); setQOn([]); setTries({ wrong: [], solved: false }); setFrameFill([]); setFrameMsg(''); }, [storyPage]);
@@ -4861,6 +4878,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   };
 
   const board = boards.find(b => b.id === activeId) || builtins.find(b => b.id === activeId) || null;
+  // 두 단계 판(행동 판단 → 결과 고르기)은 정답 연습이 늘 켜져 있음
+  const practice = !!board?.frameStep || practiceRaw;
   useEffect(() => {
     if (!board) return;
     const need = new Set();
@@ -4905,6 +4924,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     else if (typeof board.sentence === 'boolean') b.sentence = board.sentence;
     if (Array.isArray(board.cellSets) && board.cellSets.length) { b.cellSets = JSON.parse(JSON.stringify(board.cellSets)); b.cellSetDefault = board.cellSetDefault || 0; }
     b.hidden = JSON.parse(JSON.stringify(board.hidden || {}));
+    if (board.showLabel === false) b.showLabel = false;
     setBoards(prev => [...prev, b]);
     setActiveId(b.id);
     setMode('edit');
@@ -5196,11 +5216,12 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   });
   const waitPick = sortMode && sortMany && !picked;
   // ----- 문장 틀: 칸 색(kinds)과 2칸·3칸 문장 -----
-  const KIND_COLOR = { who: '#E8A800', what: '#E07A2E', pos: '#3D6FB6', do: '#3D8B5A', ask: '#C25A86' };
-  const KIND_NAME = { who: '누가', what: board?.frame && Object.values(board.frame).some(s => s.includes('pos')) ? '무엇' : '어디가', pos: '어디', do: '어때요', ask: '부탁' };
+  const KIND_COLOR = { who: '#E8A800', what: '#E07A2E', pos: '#3D6FB6', do: '#3D8B5A', ask: '#C25A86', judge: '#C77700', result: '#2F7FB8' };
+  const KIND_NAME = { who: '누가', what: board?.frame && Object.values(board.frame).some(s => s.includes('pos')) ? '무엇' : '어디가', pos: '어디', do: '어때요', ask: '부탁', judge: '어떤 행동', result: '어떤 일' };
   const kindOf = (label) => ((board?.frameWho || []).some(w => w.label === label) ? 'who' : (board?.kinds ? board.kinds[label] : undefined));
   const frameN = (() => {
     if (!board?.frame) return 0;
+    if (board.frameStep) return board.frame[2] ? 2 : 0;
     const v = frameBy[board.id] ?? (() => { try { return parseInt(localStorage.getItem('aac_frame:' + board.id) || '0', 10) || 0; } catch { return 0; } })();
     return board.frame[v] ? v : 0;
   })();
@@ -5245,16 +5266,18 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   };
   // 보기 수: 정답 + 나머지에서 쪽마다 고정된 순서로 몇 개만
   const shownIdx = useMemo(() => {
-    if (!practiceOn || !choiceN || board?.sort) return null;
+    const nShow = board?.frameStep ? choiceStepN : choiceN;
+    if (!practiceOn || !nShow || board?.sort) return null;
     const cells = useCells || board?.cells || [];
     const ans = [], rest = [];
-    cells.forEach((c, i) => { const l = cellView(c, i).label; if (!l) return; (answerSet.has(l) ? ans : rest).push(i); });
+    const stepKind = board?.frameStep && frameSlots ? (nextKind || frameSlots[frameSlots.length - 1]) : null;
+    cells.forEach((c, i) => { const l = cellView(c, i).label; if (!l) return; if (stepKind && kindOf(l) !== stepKind) return; (answerSet.has(l) ? ans : rest).push(i); });
     let seed = (pIdx + 1) * 9301 + String(board?.id || '').length * 49297;
     const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
     const mixed = rest.map(i => [rnd(), i]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
-    return new Set([...ans, ...mixed.slice(0, Math.max(0, choiceN - ans.length))]);
+    return new Set([...ans, ...mixed.slice(0, Math.max(0, nShow - ans.length))]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [practiceOn, choiceN, pIdx, useCells, board?.id, (pageAnswers || []).join('|')]);
+  }, [practiceOn, choiceN, choiceStepN, pIdx, useCells, board?.id, (pageAnswers || []).join('|'), nextKind, frameFill.length]);
   // 정답 연습 때는 칸 자리를 쪽마다 섞어서 보여 줌 (정답이 늘 같은 자리에 오지 않게)
   const practiceOrder = useMemo(() => {
     if (!practiceOn || board?.sort) return null;
@@ -5275,7 +5298,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     const pct = targetPages.length ? Math.round(doneN / targetPages.length * 100) : 0;
     return (
       <div className={`flex items-center gap-2 flex-1 min-w-0 ${large ? 'text-base' : 'text-sm'}`}>
-        {hasAnswers && (
+        {hasAnswers && !board?.frameStep && (
           <button onClick={() => setPractice(v => !v)} aria-pressed={practice}
             className="rounded-full border-2 px-3 py-1 font-bold flex items-center gap-1 flex-none"
             style={practice ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}>
@@ -5316,12 +5339,16 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <div className="overflow-auto px-4 pb-4">
             {hasAnswers && practice && !board.sort && (
               <Row label="보기 수">
-                {[[1, '1개 (정답만)'], [2, '2개'], [3, '3개'], [0, '전체']].map(([v, l]) => (
+                {board.frameStep
+                  ? [[2, '2개'], [3, '3개'], [4, '4개'], [0, '전체']].map(([v, l]) => (
+                    <button key={v} onClick={() => setChoiceStepN(v)} aria-pressed={choiceStepN === v} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(choiceStepN === v)}>{l}</button>
+                  ))
+                  : [[1, '1개 (정답만)'], [2, '2개'], [3, '3개'], [0, '전체']].map(([v, l]) => (
                   <button key={v} onClick={() => setChoiceN(v)} aria-pressed={choiceN === v} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(choiceN === v)}>{l}</button>
                 ))}
               </Row>
             )}
-            {hasAnswers && practice && board.frame && (
+            {hasAnswers && practice && board.frame && !board.frameStep && (
               <Row label="답하는 방법">
                 {[[0, '낱말로'], ...[2, 3].filter(n => board.frame[n]).map(n => [n, `문장으로 (${n}칸)`])].map(([v, l]) => (
                   <button key={v} onClick={() => setFrameN(v)} aria-pressed={frameN === v} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(frameN === v)}>{l}</button>
@@ -5408,7 +5435,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
                   <tr key={k} className="border-b border-stone-100 whitespace-nowrap">
                     <td className="py-1.5 px-2 text-stone-400">{n + 1}</td>
                     <td className="py-1.5 px-2 whitespace-normal min-w-[9rem]"><span className="inline-flex items-center gap-2">{im && <img src={im} alt="" className="w-9 h-9 object-contain flex-none" draggable={false} />}<span className="break-keep">{pg.text || ''}</span></span></td>
-                    <td className="py-1.5 px-2">{pageAns(pg).join(', ')}</td>
+                    <td className="py-1.5 px-2">{board.frameStep && pg.slotAns?.result ? `${pageAns(pg).join(', ')} → ${pg.slotAns.result}` : pageAns(pg).join(', ')}</td>
                     <td className="py-1.5 px-2"><span className="rounded-full px-2.5 py-0.5 text-xs font-bold" style={good ? { background: '#E6F6EC', color: '#2E9E5B' } : { background: '#FDECEC', color: '#D9534F' }}>{good ? '정반응' : '오반응'}</span></td>
                     <td className="py-1.5 px-2">{missCount[k] || 0}회</td>
                   </tr>
@@ -5527,9 +5554,9 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <button onClick={() => setStoryPage(Math.min(pages.length - 1, pIdx + 1))} disabled={pIdx >= pages.length - 1}
             className="h-12 rounded-xl border border-stone-200 bg-white flex items-center justify-center disabled:opacity-30" aria-label="다음 쪽"><ChevronDown className="w-5 h-5 -rotate-90" /></button>
         </div>
-        {(qGroups || mode !== 'use') && <div className="flex items-center justify-center gap-2 flex-wrap">
+        {(qGroups || mode !== 'use' || board.frameStep) && <div className="flex items-center justify-center gap-2 flex-wrap">
           {qs.map((q, k) => {
-            const on = qGroups && qOn.includes(k);
+            const on = (qGroups && qOn.includes(k)) || (!!board.frameStep && mode === 'use' && !tries.solved && !showResult && frameFill.length === k);
             return (
               <button key={k} onClick={() => { speakText(q); if (qGroups && mode === 'use') setQOn(prev => prev.includes(k) ? prev.filter(x => x !== k) : [...prev, k]); }}
                 className={`rounded-full border-2 flex items-center gap-1.5 font-bold ${large ? 'px-5 py-2.5 text-lg' : 'px-4 py-1.5 text-sm'}`}
@@ -5658,7 +5685,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     return (<>
       {frameSlots ? renderFrameBar(large) : renderSentenceBar(large)}
       {!isStory && cellSets && mode === 'use' && <div className="mb-3 flex justify-end">{renderPractice(large)}</div>}
-      <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${narrow ? Math.min(board.cols || 4, 3) : (board.cols || 4)}, minmax(0, 1fr))` }}>
+      <div className="grid gap-2 sm:gap-3" style={{ gridTemplateColumns: `repeat(${board.frameStep && mode === 'use' && nextKind === 'judge' ? 2 : (narrow ? Math.min(board.cols || 4, 3) : (board.cols || 4))}, minmax(0, 1fr))`, ...(board.frameStep && mode === 'use' && nextKind === 'judge' ? { maxWidth: large ? 560 : 420, margin: '0 auto' } : {}) }}>
         {whoCells.map((c, j) => (
           <button key={'who' + j} onClick={() => frameTap(c.label, c.image)}
             className="relative rounded-2xl border-[3px] bg-white flex flex-col p-1.5 pt-2.5 aspect-square items-center justify-center overflow-hidden transition active:scale-95"
@@ -5679,6 +5706,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           const isWrong = practiceOn && !waitPick && !showResult && tries.wrong.includes(i);
           const empty = !v.image && !v.label;
           // 수업 화면: 숨긴 칸·빈 칸은 자리만 남김 (아이가 누를 것만 보이게)
+          // 두 단계 판: 지금 단계 칸만 보임 (1단계 해도 돼요/멈춰요 → 2단계 결과 그림)
+          if (mode === 'use' && board.frameStep && frameSlots && v.label && kindOf(v.label) !== (nextKind || frameSlots[frameSlots.length - 1])) return null;
           if (mode === 'use' && (v.hidden || empty)) return <div key={i} className="aspect-square" aria-hidden="true" />;
           return (
             <button key={i} onClick={() => onCellClick(i)}
@@ -5726,12 +5755,12 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   // 판 갈래(놀이·생활·…) — 판 고르기 창과 아이 화면이 같이 씀
   const BOARD_AREAS = [
     { k: 'play', name: '🧸 놀이', groups: ['기본 놀이판 (틈새톡톡)', '놀이 AAC (톡톡 붙이고 조물조물)'] },
-    { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기'] },
+    { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기', '아하! 나의 학교생활 (아하쌤)'] },
     { k: 'body', name: '🩹 몸 · 아파요', groups: ['아파요 다쳤어요 (칩판)', '아파요 다쳤어요 (그림 보고 말하기)', '신체 부위 공부 (다원쌤)'] },
     { k: 'feel', name: '😊 기분 · 하는 말', groups: ['기분', '이럴 때 무슨 말 해야 돼?'] },
     { k: 'verb', name: '🏃 동사', groups: ['만 3세 고빈도 동사', '하고 있어요 · 다 했어요 (이어짐)', '내가 했어요 · 친구에게 해 줬어요 (이어짐)'] },
     { k: 'story', name: '📖 이야기', groups: ['이야기책', '반대말 동화', '사계절 동화'] },
-    { k: 'think', name: '🧩 생각하기', groups: ['어디에 들어가?', '딱 맞는 짝을 찾아요', '빠진 부분 찾기', '어디에 있어?'] },
+    { k: 'think', name: '🧩 생각하기', groups: ['어디에 들어가?', '딱 맞는 짝을 찾아요', '빠진 부분 찾기', '어디에 있어?', '이렇게 하면 어떤 일이 생길까? (이어짐)'] },
   ];
   const areaInfo = () => {
     const listed = builtins.filter(b => !b.unlisted);
