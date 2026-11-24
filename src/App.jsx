@@ -3764,6 +3764,7 @@ const BuiltinUploadModal = ({ count, onDone, onClose }) => {
         ...(b.sort ? { sort: true, ...(Array.isArray(b.sortDefault) ? { sortDefault: b.sortDefault } : {}) } : {}),
         ...(b.kinds ? { kinds: b.kinds } : {}),
         ...(b.frameStep ? { frameStep: true } : {}),
+        ...(b.needAll ? { needAll: true } : {}),
         ...(b.showLabel === false ? { showLabel: false } : {}),
         ...(b.frame ? { frame: b.frame, frameFixed: b.frameFixed || {}, frameWho: b.frameWho || [] } : {}) }));
       if (!ok) fail++;
@@ -4752,6 +4753,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       if (o && o.sort) extra = { ...extra, sort: true, ...(Array.isArray(o.sortDefault) ? { sortDefault: o.sortDefault } : {}) };
       if (o && o.kinds) extra = { ...extra, kinds: o.kinds };
       if (o && o.frameStep) extra = { ...extra, frameStep: true };
+      if (o && o.needAll) extra = { ...extra, needAll: true }; // 정답이 여러 개인 쪽: 다 찾아야 다음 쪽
       if (o && o.showLabel === false) extra = { ...extra, showLabel: false }; // 그림에 글자가 이미 들어간 카드
       if (o && o.frame) extra = { ...extra, frame: o.frame, frameFixed: o.frameFixed || {}, frameWho: o.frameWho || [] };
     } catch { cells = null; }
@@ -5054,8 +5056,14 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     if (sentenceOn) setSentence(prev => [...prev, { label: v.label, image: v.image }]);
     let say = v.label;
     if (practiceOn && !tries.solved && !waitPick && !showResult) {
-      if (answerSet.has(v.label)) {
+      if (needAllOn && foundSet.has(v.label)) {
+        // 이미 찾은 것: 소리만
+      } else if (needAllOn && answerSet.has(v.label) && foundSet.size + 1 < (pageAnswers || []).length) {
+        // 다 찾기: 아직 남은 정답이 있으면 찾은 것에만 넣음
+        setTries(prev => ({ ...prev, found: [...(prev.found || []), v.label] }));
+      } else if (answerSet.has(v.label)) {
         say = v.label;
+        if (needAllOn) setTries(prev => ({ ...prev, found: [...(prev.found || []), v.label] }));
         const nextScore = score[pIdx] === undefined ? { ...score, [pIdx]: tries.wrong.length === 0 } : score;
         setScore(nextScore);
         setTries(prev => ({ ...prev, solved: true }));
@@ -5236,7 +5244,10 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     const fx = board?.frameFixed?.[k];
     return fx ? [fx] : null; // null = 그 색 칸이면 무엇이든
   };
-  const answerSet = new Set((waitPick || showResult) ? [] : (frameSlots ? (nextKind ? (slotTarget(nextKind) || []) : []) : (pageAnswers || [])));
+  // 다 찾기 판(needAll): 정답이 여러 개면 하나씩 다 눌러야 함. 찾은 것은 foundSet
+  const needAllOn = !!(board?.needAll && practiceOn && !frameSlots && (pageAnswers || []).length > 1);
+  const foundSet = new Set(needAllOn ? (tries.found || []) : []);
+  const answerSet = new Set(((waitPick || showResult) ? [] : (frameSlots ? (nextKind ? (slotTarget(nextKind) || []) : []) : (pageAnswers || []))).filter(l => !foundSet.has(l)));
   const flashAnswer = practiceOn && !waitPick && !showResult && !tries.solved && tries.wrong.length >= 2;
   const restartPractice = (first) => {
     if (advanceTimer.current) clearTimeout(advanceTimer.current);
@@ -5267,17 +5278,19 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   // 보기 수: 정답 + 나머지에서 쪽마다 고정된 순서로 몇 개만
   const shownIdx = useMemo(() => {
     const nShow = board?.frameStep ? choiceStepN : choiceN;
-    if (!practiceOn || !nShow || board?.sort) return null;
+    const hasChoices = Array.isArray(page?.choices) && page.choices.length > 0;
+    if (!practiceOn || (!nShow && !hasChoices) || board?.sort) return null;
     const cells = useCells || board?.cells || [];
     const ans = [], rest = [];
     const stepKind = board?.frameStep && frameSlots ? (nextKind || frameSlots[frameSlots.length - 1]) : null;
-    cells.forEach((c, i) => { const l = cellView(c, i).label; if (!l) return; if (stepKind && kindOf(l) !== stepKind) return; (answerSet.has(l) ? ans : rest).push(i); });
+    const pageChoices = Array.isArray(page?.choices) && page.choices.length ? new Set(page.choices) : null;
+    cells.forEach((c, i) => { const l = cellView(c, i).label; if (!l) return; if (stepKind && kindOf(l) !== stepKind) return; if (pageChoices && !pageChoices.has(l)) return; (answerSet.has(l) || foundSet.has(l) ? ans : rest).push(i); });
     let seed = (pIdx + 1) * 9301 + String(board?.id || '').length * 49297;
     const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
     const mixed = rest.map(i => [rnd(), i]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
-    return new Set([...ans, ...mixed.slice(0, Math.max(0, nShow - ans.length))]);
+    return new Set([...ans, ...(nShow ? mixed.slice(0, Math.max(0, nShow - ans.length)) : mixed)]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [practiceOn, choiceN, choiceStepN, pIdx, useCells, board?.id, (pageAnswers || []).join('|'), nextKind, frameFill.length]);
+  }, [practiceOn, choiceN, choiceStepN, pIdx, useCells, board?.id, (pageAnswers || []).join('|'), nextKind, frameFill.length, (tries.found || []).length]);
   // 정답 연습 때는 칸 자리를 쪽마다 섞어서 보여 줌 (정답이 늘 같은 자리에 오지 않게)
   const practiceOrder = useMemo(() => {
     if (!practiceOn || board?.sort) return null;
@@ -5304,6 +5317,9 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
             style={practice ? { borderColor: BOARD_PINK, background: BOARD_PINK, color: '#fff' } : { borderColor: BOARD_PINK, color: '#993556', background: '#fff' }}>
             <Check className="w-4 h-4" /> 정답 연습
           </button>
+        )}
+        {needAllOn && !tries.solved && !showResult && (
+          <b className="flex-none rounded-full px-2.5 py-0.5 whitespace-nowrap" style={{ background: '#E8F5EE', color: '#1F7A45' }}>{(pageAnswers || []).length}개 중 {foundSet.size}개 찾았어요</b>
         )}
         <span className="flex items-center gap-1.5 flex-1 min-w-0">
           {hasAnswers && practice && targetPages.length > 0 && (<>
@@ -5714,7 +5730,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               className={`relative rounded-2xl border-2 bg-white flex flex-col p-1.5 transition active:scale-95 ${sortMode && v.label ? 'items-start justify-start min-h-[150px]' : 'aspect-square items-center justify-center'} ${
                 v.hidden ? 'border-dashed border-stone-300 opacity-40' : empty ? 'border-dashed border-stone-300' : 'border-stone-200'} ${
                 isWrong || frameDim ? 'opacity-40' : ''} ${isAns && flashAnswer ? 'animate-pulse' : ''} ${kc ? 'overflow-hidden pt-2.5' : ''}`}
-              style={{ ...(kc ? { borderColor: kc, borderWidth: 3 } : {}), ...(isAns && (tries.solved || flashAnswer) ? { borderColor: '#2E9E5B', boxShadow: '0 0 0 4px #2E9E5B55' }
+              style={{ ...(kc ? { borderColor: kc, borderWidth: 3 } : {}), ...((isAns && (tries.solved || flashAnswer)) || (foundSet.has(v.label) && !showResult) ? { borderColor: '#2E9E5B', boxShadow: '0 0 0 4px #2E9E5B55' }
                 : saying === i ? { borderColor: BOARD_PINK, boxShadow: `0 0 0 3px ${BOARD_PINK}55` } : {}), ...(practiceOrder ? { order: practiceOrder.get(i) } : {}) }}>
               {kc && <span className="absolute left-0 right-0 top-0 h-1.5" style={{ background: kc }} />}
               {sortMode && v.label ? (() => {
@@ -5760,7 +5776,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
     { k: 'feel', name: '😊 기분 · 하는 말', groups: ['기분', '이럴 때 무슨 말 해야 돼?'] },
     { k: 'verb', name: '🏃 동사', groups: ['만 3세 고빈도 동사', '하고 있어요 · 다 했어요 (이어짐)', '내가 했어요 · 친구에게 해 줬어요 (이어짐)'] },
     { k: 'story', name: '📖 이야기', groups: ['이야기책', '반대말 동화', '사계절 동화'] },
-    { k: 'think', name: '🧩 생각하기', groups: ['어디에 들어가?', '딱 맞는 짝을 찾아요', '빠진 부분 찾기', '어디에 있어?', '이렇게 하면 어떤 일이 생길까? (이어짐)'] },
+    { k: 'think', name: '🧩 생각하기', groups: ['어디에 들어가?', '딱 맞는 짝을 찾아요', '빠진 부분 찾기', '어디에 있어?', '이렇게 하면 어떤 일이 생길까? (이어짐)', '일할 준비 됐나요? (이어짐)'] },
   ];
   const areaInfo = () => {
     const listed = builtins.filter(b => !b.unlisted);
