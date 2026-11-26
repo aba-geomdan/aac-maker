@@ -3643,6 +3643,113 @@ async function sharedMediaRemove(path) {
   } catch (e) { return false; }
 }
 const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
+// ── 색깔 피아노 (말하는 판 ☰ 메뉴에서만 열림) ──
+const PIANO_NAMES = ['도', '레', '미', '파', '솔', '라', '시', '높은 도'];
+const PIANO_COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#1E88E5', '#283593', '#8E24AA', '#E53935'];
+const PIANO_FREQ = [261.63, 293.66, 329.63, 349.23, 392, 440, 493.88, 523.25];
+const pianoParse = (s) => { const M = { 도: 0, 레: 1, 미: 2, 파: 3, 솔: 4, 라: 5, 시: 6, C: 7 }; return s.trim().split(/\s*\/\s*/).map(l => l.split(/\s+/).map(x => M[x])); };
+const PIANO_SONGS = [
+  { t: '곰 세 마리', l: pianoParse('도 도 도 도 도 / 미 솔 솔 미 도 / 솔 솔 미 솔 솔 미 / 도 도 도 / 솔 솔 미 도 솔 솔 솔 / 솔 솔 미 도 솔 솔 솔 / 솔 솔 미 도 솔 솔 솔 라 솔 / 도 솔 도 솔 미 레 도') },
+  { t: '나비야', l: pianoParse('솔 미 미 / 파 레 레 / 도 레 미 파 솔 솔 솔 / 솔 미 미 / 파 레 레 / 도 미 솔 솔 미 미 미 / 레 레 레 레 레 미 파 / 미 미 미 미 미 파 솔 / 솔 미 미 / 파 레 레 / 도 미 솔 솔 도') },
+  { t: '거미가 줄을 타고', l: pianoParse('솔 도 도 도 레 미 미 / 미 레 도 레 미 도 / 미 미 파 솔 / 솔 파 미 파 솔 미 / 도 도 레 미 / 미 레 도 레 미 도 / 솔 솔 도 도 도 레 미 미 / 미 레 도 레 미 도') },
+  { t: '기쁨의 노래', l: pianoParse('미 미 파 솔 / 솔 파 미 레 / 도 도 레 미 / 미 레 레 / 미 미 파 솔 / 솔 파 미 레 / 도 도 레 미 / 레 도 도') },
+  { t: '반짝반짝 작은 별', l: pianoParse('도 도 솔 솔 라 라 솔 / 파 파 미 미 레 레 도 / 솔 솔 파 파 미 미 레 / 솔 솔 파 파 미 미 레 / 도 도 솔 솔 라 라 솔 / 파 파 미 미 레 레 도') },
+  { t: '비행기', l: pianoParse('미 레 도 레 미 미 미 / 레 레 레 미 솔 솔 / 미 레 도 레 미 미 미 / 레 레 미 레 도') },
+  { t: '징글벨', l: pianoParse('미 미 미 미 미 미 / 미 솔 도 레 미 / 파 파 파 파 파 미 미 미 / 미 레 레 미 레 솔 / 미 미 미 미 미 미 / 미 솔 도 레 미 / 파 파 파 파 파 미 미 미 / 솔 솔 파 레 도') },
+  { t: '고요한 밤', l: pianoParse('솔 라 솔 미 / 솔 라 솔 미') },
+  { t: '기쁘다 구주 오셨네', l: pianoParse('C 시 라 솔 / 파 미 레 도 / 솔 라 / 라 시 / 시 C / C C 시 라 솔 / 솔 파 미') },
+];
+let pianoCtx = null;
+function pianoTone(i, d = 0.45) {
+  try {
+    pianoCtx = pianoCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (pianoCtx.state === 'suspended') pianoCtx.resume();
+    const t = pianoCtx.currentTime, o = pianoCtx.createOscillator(), o2 = pianoCtx.createOscillator(), g = pianoCtx.createGain(), g2 = pianoCtx.createGain();
+    o.type = 'triangle'; o2.type = 'sine'; o.frequency.value = PIANO_FREQ[i]; o2.frequency.value = PIANO_FREQ[i] * 2; g2.gain.value = 0.15;
+    o2.connect(g2).connect(g); o.connect(g); g.connect(pianoCtx.destination);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.35, t + 0.01); g.gain.exponentialRampToValueAtTime(0.001, t + d + 0.4);
+    o.start(t); o2.start(t); o.stop(t + d + 0.45); o2.stop(t + d + 0.45);
+  } catch {}
+}
+function PianoModal({ onClose }) {
+  const [songIdx, setSongIdx] = useState(-1);
+  const [pos, setPos] = useState(0);
+  const [hit, setHit] = useState(-1);
+  const [busy, setBusy] = useState(false);
+  const stopRef = useRef(false);
+  useEffect(() => () => { stopRef.current = true; }, []);
+  const song = songIdx >= 0 ? PIANO_SONGS[songIdx] : null;
+  const flat = song ? song.l.flat() : [];
+  const done = song && pos >= flat.length;
+  const flash = (i) => { setHit(i); setTimeout(() => setHit(h => (h === i ? -1 : h)), 150); };
+  const press = (i) => {
+    pianoTone(i); flash(i);
+    if (!song || busy || pos >= flat.length) return;
+    if (flat[pos] === i) setPos(p => p + 1);
+  };
+  const listen = async () => {
+    if (!song || busy) return; setBusy(true); stopRef.current = false;
+    for (const i of flat) { if (stopRef.current) break; pianoTone(i, 0.3); setHit(i); await new Promise(r => setTimeout(r, 380)); setHit(-1); await new Promise(r => setTimeout(r, 60)); }
+    setBusy(false);
+  };
+  let k = 0;
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col" style={{ background: '#FFF8F1', color: '#2F2724' }} role="dialog" aria-label="색깔 피아노">
+      <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-stone-200 flex-none">
+        <span className="font-bold text-lg">🎹 색깔 피아노</span>
+        <button onClick={() => { stopRef.current = true; onClose(); }} className="ml-auto px-3 py-1.5 rounded-xl border border-stone-300 bg-white text-sm font-bold flex items-center gap-1"><X className="w-4 h-4" /> 닫기</button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-3">
+        <div className="max-w-3xl mx-auto space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {PIANO_SONGS.map((s, i) => (
+              <button key={s.t} onClick={() => { stopRef.current = true; setSongIdx(i); setPos(0); }} aria-pressed={songIdx === i}
+                className="px-3 py-1.5 rounded-full border-2 text-sm bg-white"
+                style={songIdx === i ? { borderColor: BOARD_PINK, background: '#FCE9ED', fontWeight: 700 } : { borderColor: '#EADFD6' }}>{s.t}</button>
+            ))}
+          </div>
+          <div className="rounded-2xl border-2 border-stone-200 bg-white p-3 min-h-[80px]">
+            {!song ? <p className="text-sm text-stone-500">노래를 고르면 칠 음이 하나씩 빛나요. 노래를 고르지 않고 건반만 눌러도 소리가 나요.</p> : song.l.map((line, li) => (
+              <div key={li} className="flex flex-wrap gap-2 mb-2">
+                {line.map((n) => { const idx = k++; const now = idx === pos; return (
+                  <span key={idx} className="w-10 h-10 rounded-full grid place-items-center font-bold text-center leading-none"
+                    style={{ background: PIANO_COLORS[n], color: n === 2 ? '#3a2f00' : '#fff', fontSize: n === 7 ? 10 : 14, opacity: idx <= pos ? 1 : 0.35,
+                      transform: now ? 'scale(1.2)' : 'none', outline: now ? '3px solid #2F2724' : 'none', transition: 'transform .15s, opacity .15s' }}>{n === 7 ? <>높은<br />도</> : PIANO_NAMES[n]}</span>
+                ); })}
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button onClick={() => { stopRef.current = true; setPos(0); }} disabled={!song} className="px-3 py-1.5 rounded-xl border border-stone-300 bg-white text-sm disabled:opacity-40">처음부터</button>
+            <button onClick={listen} disabled={!song || busy} className="px-3 py-1.5 rounded-xl border border-stone-300 bg-white text-sm disabled:opacity-40">▶ 들어 보기</button>
+            {song && <span className="text-sm text-stone-500">{Math.min(pos + 1, flat.length)} / {flat.length}</span>}
+            {done && <span className="font-bold" style={{ color: BOARD_PINK }}>🎉 다 쳤어요!</span>}
+          </div>
+        </div>
+      </div>
+      <div className="flex-none px-2 pb-2" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom))' }}>
+        <div className="max-w-3xl mx-auto relative grid gap-1 p-1.5 rounded-2xl" style={{ gridTemplateColumns: 'repeat(8, minmax(0, 1fr))', background: '#2F2724' }}>
+          {PIANO_NAMES.map((n, i) => {
+            const glow = song && !done && flat[pos] === i;
+            return (
+              <button key={i} aria-label={n} onPointerDown={(e) => { e.preventDefault(); press(i); }}
+                className="rounded-b-xl flex flex-col justify-end items-center pb-2 min-w-0 select-none"
+                style={{ height: 'min(40vw, 220px)', background: hit === i ? '#FFF3C4' : '#fff', boxShadow: glow ? `inset 0 0 0 5px ${PIANO_COLORS[i]}` : 'none', touchAction: 'manipulation' }}>
+                {i === 7 && <span className="font-bold mb-0.5" style={{ fontSize: 'clamp(9px, 2.4vw, 13px)', color: PIANO_COLORS[i] }}>높은</span>}
+                <span className="rounded-full grid place-items-center text-white font-bold text-center leading-none"
+                  style={{ width: 'min(8.5vw, 48px)', height: 'min(8.5vw, 48px)', background: PIANO_COLORS[i], fontSize: 'clamp(11px, 2.8vw, 16px)' }}>{i === 7 ? '도' : n}</span>
+              </button>
+            );
+          })}
+          {[0, 1, 3, 4, 5].map(b => (
+            <div key={b} className="absolute top-1.5 rounded-b-lg pointer-events-none" style={{ background: '#1b1615', width: 'calc((100% - 12px) / 8 * 0.55)', height: 'calc(min(40vw, 220px) * 0.58)', left: `calc(6px + (100% - 12px) / 8 * ${b + 1} - (100% - 12px) / 8 * 0.275)` }} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LibraryModal({ isAdmin, onClose }) {
   const [items, setItems] = useState(null);
   const [err, setErr] = useState('');
@@ -4830,6 +4937,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   }, []);
   const [showVoice, setShowVoice] = useState(false); // 목소리 고르기 창
   const [showLibrary, setShowLibrary] = useState(false); // 자료실
+  const [showPiano, setShowPiano] = useState(false); // 색깔 피아노
   // 영상 소리 끄기 (이 기기에서 기억)
   const [videoMuted, setVideoMuted] = useState(() => { try { return localStorage.getItem('aac_video_muted') === '1'; } catch { return false; } });
   const toggleVideoMuted = () => setVideoMuted(m => {
@@ -5874,6 +5982,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               <button onClick={addBoard} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Plus className="w-4 h-4" /> 새 판</button>
               <button onClick={() => setShowImport(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Upload className="w-4 h-4" /> 칩판 넣기</button>
               <button onClick={() => setShowLibrary(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><FolderOpen className="w-4 h-4" /> 자료실</button>
+              <button onClick={() => setShowPiano(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><span className="w-4 text-center">🎹</span> 색깔 피아노</button>
               {kidId !== 'all' && <button onClick={removeKid} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-500"><X className="w-4 h-4" /> 아이 빼기 ({kidName})</button>}
               {isAdmin && <div className="my-1 border-t border-stone-100" />}
               {isAdmin && <button onClick={() => setShowBuiltinUpload(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2" style={{ color: '#993556' }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>}
@@ -6018,11 +6127,12 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
 
       {showVoice && <VoiceModal rate={rate} setRate={setRate} onClose={() => setShowVoice(false)} />}
       {showLibrary && <LibraryModal isAdmin={isAdmin} onClose={() => setShowLibrary(false)} />}
+      {showPiano && <PianoModal onClose={() => setShowPiano(false)} />}
       {renderPracticeSettings()}
       {showPicker && (() => {
         const AREAS = [
           { k: 'play', name: '🧸 놀이', groups: ['기본 놀이판 (틈새톡톡)', '놀이 AAC (톡톡 붙이고 조물조물)', '엄마 로봇을 움직여요 (이어짐)'] },
-          { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '생활동화 AAC 거실 (이어짐)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기'] },
+          { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '생활동화 AAC 거실 (이어짐)', '생활동화 AAC 어린이집 (이어짐)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기'] },
           { k: 'body', name: '🩹 몸 · 아파요', groups: ['아파요 다쳤어요 (칩판)', '아파요 다쳤어요 (그림 보고 말하기)', '신체 부위 AAC 아파요 (이어짐)', '신체 부위 공부 (다원쌤)'] },
           { k: 'feel', name: '😊 기분 · 하는 말', groups: ['아하! 한 판으로 말해요 (아하쌤)', '기분', '이럴 때 무슨 말 해야 돼?'] },
           { k: 'verb', name: '🏃 동사', groups: ['만 3세 고빈도 동사', '하고 있어요 · 다 했어요 (이어짐)', '내가 했어요 · 친구에게 해 줬어요 (이어짐)'] },
