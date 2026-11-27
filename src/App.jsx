@@ -3777,7 +3777,7 @@ function ToolPic({ it, px, round = 6 }) {
   if (it.img) return <img src={it.img} alt="" draggable={false} style={{ width: px, height: px, objectFit: 'cover', borderRadius: Math.round(px / round), display: 'inline-block' }} />;
   return <span style={{ fontSize: Math.round(px * 0.8), lineHeight: 1 }}>{it.emoji}</span>;
 }
-function ToolsModal({ kidKey, kidName, boardItems, speak, onClose }) {
+function ToolsModal({ kidKey, kidName, boardItems, voiceCells, voiceIdx, saveVoice, deleteVoice, speak, onClose }) {
   const [tab, setTab] = useState('timer');
   const [st, setSt] = useState(null); // 저장되는 설정
   const [photoAsk, setPhotoAsk] = useState(null); // { img, onDone }
@@ -3830,7 +3830,7 @@ function ToolsModal({ kidKey, kidName, boardItems, speak, onClose }) {
       </label>
     </div>
   );
-  const TABS = [['timer', '⏱️ 시각 타이머'], ['token', '⭐ 토큰판'], ['ft', '➡️ 먼저–다음'], ['choice', '🙋 강화제 고르기'], ['bubble', '🫧 눌러 보기']];
+  const TABS = [['timer', '⏱️ 시각 타이머'], ['sched', '📋 오늘 일과표'], ['token', '⭐ 토큰판'], ['ft', '➡️ 먼저–다음'], ['choice', '🙋 강화제 고르기'], ['wheel', '🎡 돌림판'], ['mem', '🃏 같은 그림 찾기'], ['bubble', '🫧 눌러 보기'], ['mood', '😊 오늘 기분'], ['voice', '🎤 내 목소리'], ['rec', '📈 정답 연습 기록']];
   const opt = (on) => ({ className: 'px-3 py-1.5 rounded-full border-2 text-sm bg-white', style: on ? { borderColor: BOARD_PINK, background: '#FCE9ED', fontWeight: 700 } : { borderColor: '#EADFD6' } });
   return (
     <div className="fixed inset-0 z-50 flex flex-col select-none" style={{ background: '#FFF8F1', color: '#2F2724' }} role="dialog" aria-label="수업 도구">
@@ -3851,6 +3851,12 @@ function ToolsModal({ kidKey, kidName, boardItems, speak, onClose }) {
               {tab === 'ft' && <ToolFirstThen st={st} update={update} speak={speak} Picker={Picker} />}
               {tab === 'choice' && <ToolChoice st={st} update={update} speak={speak} opt={opt} Picker={Picker} />}
               {tab === 'bubble' && <ToolBubble />}
+              {tab === 'sched' && <ToolSchedule st={st} update={update} speak={speak} Picker={Picker} />}
+              {tab === 'wheel' && <ToolWheel st={st} update={update} speak={speak} Picker={Picker} />}
+              {tab === 'mem' && <ToolMemory st={st} update={update} speak={speak} opt={opt} Picker={Picker} />}
+              {tab === 'mood' && <ToolMood st={st} update={update} speak={speak} Picker={Picker} />}
+              {tab === 'voice' && <ToolVoice cells={voiceCells} voiceIdx={voiceIdx} saveVoice={saveVoice} deleteVoice={deleteVoice} speak={speak} />}
+              {tab === 'rec' && <ToolRecords kidKey={kidKey} kidName={kidName} st={st} update={update} />}
             </>
           )}
         </div>
@@ -4012,6 +4018,251 @@ function ToolBubble() {
       <style>{'@keyframes toolRise{to{transform:translateY(-160px) scale(1.4);opacity:0}}'}</style>
       {bubs.map(b => <span key={b.id} className="absolute rounded-full pointer-events-none" style={{ left: b.x, top: b.y, width: b.s, height: b.s, background: 'radial-gradient(circle at 30% 30%, rgba(255,255,255,.95), rgba(255,255,255,.25) 40%, rgba(120,180,255,.35))', border: '2px solid rgba(255,255,255,.8)', animation: 'toolRise 2.4s ease-out forwards' }} />)}
       <p className="absolute inset-x-0 bottom-3 text-center font-bold m-0" style={{ color: '#3b6a92' }}>화면 아무 데나 눌러 보세요!</p>
+    </div>
+  );
+}
+
+const TOOL_SCHED_DEFAULT = [['👋', '인사'], ['🧩', '퍼즐'], ['🎹', '피아노'], ['🍪', '간식'], ['🧹', '정리하기'], ['🏠', '집에 가요']].map(([e, n], i) => ({ id: 's' + i, name: n, emoji: e }));
+const TOOL_MOOD_DEFAULT = [['😄', '좋아요'], ['🙂', '괜찮아요'], ['😢', '슬퍼요'], ['😠', '화나요'], ['😴', '피곤해요']].map(([e, n], i) => ({ id: 'm' + i, name: n, emoji: e }));
+const toolDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function ToolSchedule({ st, update, speak, Picker }) {
+  const [pos, setPos] = useState(0);
+  const [edit, setEdit] = useState(false);
+  const list = st.sched || TOOL_SCHED_DEFAULT;
+  const next = () => {
+    if (pos >= list.length) { setPos(0); return; }
+    const p = pos + 1; setPos(p); toolBeep(700, 0.2);
+    if (p >= list.length) { toolChime(); setTimeout(() => speak('오늘 할 일 끝!'), 400); } else setTimeout(() => speak('다음은 ' + list[p].name), 300);
+  };
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div className="text-2xl font-bold">오늘 할 일</div>
+      <div className="flex flex-wrap gap-2.5 justify-center w-full">
+        {list.map((it, i) => (
+          <button key={it.id + i} onClick={() => { if (edit) { update({ sched: list.filter((_, j) => j !== i) }); setPos(p => Math.min(p, list.length - 1)); } else speak(it.name); }}
+            className="relative rounded-2xl border-[3px] bg-white px-1 py-2 text-center" style={{ width: 'min(28vw, 130px)', borderColor: i === pos ? BOARD_PINK : '#EADFD6', boxShadow: i === pos ? '0 0 0 4px #FCE9ED' : 'none', opacity: i < pos ? 0.5 : 1 }}>
+            <span className="absolute top-1 left-2 text-xs text-stone-500">{i + 1}</span>
+            {edit && <span className="absolute top-1 right-1 w-5 h-5 rounded-full bg-stone-700 text-white text-[11px] grid place-items-center">×</span>}
+            <div className="flex justify-center"><ToolPic it={it} px={64} /></div>
+            <div className="font-bold text-sm mt-1 break-keep">{it.name}</div>
+            {i < pos && <span className="absolute inset-0 grid place-items-center text-6xl font-bold" style={{ color: '#3D8B5A' }}>✓</span>}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2 justify-center">
+        <button onClick={next} className="px-4 py-2 rounded-xl text-white font-bold" style={{ background: BOARD_PINK }}>{pos >= list.length ? '처음부터' : '✓ 끝났어요'}</button>
+        <button onClick={() => setEdit(e => !e)} className="px-3 py-2 rounded-xl border border-stone-300 bg-white">{edit ? '다 바꿨어요' : '순서·그림 바꾸기'}</button>
+      </div>
+      {edit && <div className="w-full"><p className="text-sm text-stone-500 mb-1">눌러서 맨 끝에 넣기 (8개까지) · 위의 칸을 누르면 빠져요</p><Picker onPick={(it) => { if (list.length < 8) update({ sched: [...list, it] }); }} /></div>}
+    </div>
+  );
+}
+const WHEEL_COLS = ['#F8B4C4', '#FFD59E', '#FFF0A0', '#B9E5B5', '#A8D4F5', '#D3B9F0', '#F5C2A8', '#B5E8E0'];
+function ToolWheel({ st, update, speak, Picker }) {
+  const list = st.wheel || [1, 3, 4, 6, 7, 2].map(i => TOOL_DEFAULT_ITEMS[i]);
+  const cvRef = useRef(null), angRef = useRef(0), imgs = useRef({});
+  const [spinning, setSpinning] = useState(false);
+  const [res, setRes] = useState('');
+  const [edit, setEdit] = useState(false);
+  const draw = useCallback(() => {
+    const cv = cvRef.current; if (!cv) return; const cx = cv.getContext('2d'), n = list.length, R = 330;
+    cx.clearRect(0, 0, 680, 680); cx.save(); cx.translate(340, 340); cx.rotate(angRef.current);
+    for (let i = 0; i < n; i++) {
+      const a0 = i * 2 * Math.PI / n - Math.PI / 2, a1 = a0 + 2 * Math.PI / n;
+      cx.beginPath(); cx.moveTo(0, 0); cx.arc(0, 0, R, a0, a1); cx.closePath(); cx.fillStyle = WHEEL_COLS[i % 8]; cx.fill(); cx.strokeStyle = '#fff'; cx.lineWidth = 6; cx.stroke();
+      cx.save(); cx.rotate((a0 + a1) / 2 + Math.PI / 2); const it = list[i];
+      if (it.img) { let im = imgs.current[it.img]; if (!im) { im = new Image(); im.onload = () => draw(); im.src = it.img; imgs.current[it.img] = im; } if (im.complete && im.naturalWidth) cx.drawImage(im, -50, -R + 40, 100, 100); }
+      else { cx.font = '90px serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(it.emoji, 0, -R + 95); }
+      cx.font = 'bold 30px sans-serif'; cx.fillStyle = '#2F2724'; cx.textAlign = 'center'; cx.textBaseline = 'alphabetic'; cx.fillText(it.name.slice(0, 7), 0, -R + 175); cx.restore();
+    }
+    cx.restore(); cx.beginPath(); cx.arc(340, 340, 34, 0, 7); cx.fillStyle = '#2F2724'; cx.fill();
+  }, [list]);
+  useEffect(() => { draw(); }, [draw]);
+  const spin = () => {
+    if (spinning) return; setSpinning(true); setRes('');
+    const start = angRef.current, add = Math.PI * 2 * (4 + Math.random() * 3), t0 = performance.now(), D = 3800; let last = 0;
+    const step = (t) => {
+      const p = Math.min(1, (t - t0) / D), e = 1 - Math.pow(1 - p, 3); angRef.current = start + add * e; draw();
+      const seg = Math.floor(angRef.current / (2 * Math.PI / list.length)); if (seg !== last) { last = seg; toolBeep(1200, 0.03, 0.12); }
+      if (p < 1) requestAnimationFrame(step);
+      else { setSpinning(false); const n = list.length, a = ((-angRef.current) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI); const i = Math.floor(a / (2 * Math.PI / n)) % n; setRes(list[i].name); toolChime(); setTimeout(() => speak(list[i].name), 300); }
+    };
+    requestAnimationFrame(step);
+  };
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div style={{ width: 0, height: 0, borderLeft: '16px solid transparent', borderRight: '16px solid transparent', borderTop: '28px solid #2F2724', marginBottom: -20, zIndex: 2, position: 'relative' }} />
+      <canvas ref={cvRef} width={680} height={680} style={{ width: 'min(80vw, 340px)', height: 'min(80vw, 340px)' }} />
+      <div className="text-3xl font-bold min-h-[40px]">{res}</div>
+      <div className="flex gap-2"><button onClick={spin} disabled={spinning} className="px-5 py-2 rounded-xl text-white font-bold disabled:opacity-60" style={{ background: BOARD_PINK }}>돌리기</button>
+        <button onClick={() => setEdit(e => !e)} className="px-3 py-2 rounded-xl border border-stone-300 bg-white">{edit ? '다 바꿨어요' : '칸 바꾸기'}</button></div>
+      {edit && <div className="w-full"><p className="text-sm text-stone-500 mb-1">눌러서 넣기·빼기 (4~8칸)</p><Picker selectedIds={list.map(x => x.id)} onPick={(it) => {
+        if (list.some(x => x.id === it.id)) { if (list.length > 4) update({ wheel: list.filter(x => x.id !== it.id) }); } else if (list.length < 8) update({ wheel: [...list, it] });
+      }} /></div>}
+    </div>
+  );
+}
+function ToolMemory({ st, update, speak, opt, Picker }) {
+  const pool = st.mem || [1, 3, 4, 6, 7, 2, 0, 8].map(i => TOOL_DEFAULT_ITEMS[i]);
+  const [pairs, setPairs] = useState(2);
+  const [cards, setCards] = useState([]);
+  const [open, setOpen] = useState([]);
+  const [tries, setTries] = useState(0);
+  const [edit, setEdit] = useState(false);
+  const lock = useRef(false);
+  const deal = useCallback((p = pairs, pl = pool) => {
+    const pick = pl.slice(0, Math.min(p, pl.length));
+    setCards([...pick, ...pick].map((it, k) => ({ it, key: k, g: false })).map(c => [c, Math.random()]).sort((a, b) => a[1] - b[1]).map(x => x[0]));
+    setOpen([]); setTries(0); lock.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairs, st.mem]);
+  useEffect(() => { deal(); }, [deal]);
+  const flip = (i) => {
+    if (lock.current || cards[i].g || open.includes(i)) return;
+    toolBeep(600, 0.08);
+    const o = [...open, i]; setOpen(o);
+    if (o.length === 2) {
+      setTries(t => t + 1); lock.current = true;
+      const same = cards[o[0]].it.id === cards[o[1]].it.id;
+      setTimeout(() => {
+        if (same) { setCards(cs => { const n = cs.map((c, k) => (k === o[0] || k === o[1] ? { ...c, g: true } : c)); if (n.every(c => c.g)) toolChime(); return n; }); speak(cards[o[0]].it.name); }
+        setOpen([]); lock.current = false;
+      }, same ? 500 : 900);
+    }
+  };
+  const got = cards.filter(c => c.g).length / 2, n = cards.length / 2;
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div className="flex flex-wrap gap-1.5 items-center justify-center"><span className="text-sm text-stone-500">짝 수</span>{[2, 3, 4, 6].map(k => <button key={k} onClick={() => setPairs(k)} aria-pressed={pairs === k} {...opt(pairs === k)}>{k}쌍</button>)}
+        <button onClick={() => deal()} className="px-3 py-1.5 rounded-xl border border-stone-300 bg-white text-sm">다시 섞기</button>
+        <button onClick={() => setEdit(e => !e)} className="px-3 py-1.5 rounded-xl border border-stone-300 bg-white text-sm">{edit ? '다 바꿨어요' : '카드 그림 바꾸기'}</button></div>
+      <div className="grid gap-2 w-full max-w-md" style={{ gridTemplateColumns: `repeat(${n <= 3 ? 3 : 4}, minmax(0, 1fr))` }}>
+        {cards.map((c, i) => { const up = c.g || open.includes(i); return (
+          <button key={c.key} onClick={() => flip(i)} aria-label={up ? c.it.name : '뒤집힌 카드'} className="aspect-square rounded-2xl border-[3px] grid place-items-center overflow-hidden"
+            style={{ borderColor: c.g ? '#3D8B5A' : '#EADFD6', background: up ? '#fff' : 'repeating-linear-gradient(45deg,#F6C9D3,#F6C9D3 8px,#FBE1E7 8px,#FBE1E7 16px)' }}>{up && <ToolPic it={c.it} px={64} />}</button>
+        ); })}
+      </div>
+      <div className="text-sm text-stone-500">{got} / {n}쌍 · {tries}번 뒤집음</div>
+      {edit && <div className="w-full"><p className="text-sm text-stone-500 mb-1">눌러서 맨 앞에 넣기 (앞에서부터 카드로 쓰여요) · 다시 누르면 빠져요</p><Picker selectedIds={pool.map(x => x.id)} onPick={(it) => {
+        update({ mem: pool.some(x => x.id === it.id) ? pool.filter(x => x.id !== it.id) : [it, ...pool].slice(0, 12) });
+      }} /></div>}
+    </div>
+  );
+}
+function ToolVoice({ cells, voiceIdx, saveVoice, deleteVoice, speak }) {
+  const [cur, setCur] = useState(null);
+  const [msg, setMsg] = useState('');
+  const mrRef = useRef(null), stopT = useRef(null);
+  useEffect(() => () => { try { mrRef.current && mrRef.current.state !== 'inactive' && mrRef.current.stop(); } catch {} clearTimeout(stopT.current); }, []);
+  const rec = async (label) => {
+    if (cur === label) { try { mrRef.current.stop(); } catch {} return; }
+    if (cur) return;
+    setMsg('');
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ch = []; const mr = new MediaRecorder(s); mrRef.current = mr;
+      mr.ondataavailable = (e) => { if (e.data && e.data.size) ch.push(e.data); };
+      mr.onstop = () => {
+        clearTimeout(stopT.current); s.getTracks().forEach(t => t.stop()); setCur(null);
+        const blob = new Blob(ch, { type: mr.mimeType || 'audio/webm' });
+        if (!blob.size) return;
+        const r = new FileReader(); r.onload = async () => { const ok = await saveVoice(label, r.result); if (!ok) setMsg('녹음을 저장하지 못했어요. 다시 해 주세요.'); }; r.readAsDataURL(blob);
+      };
+      mr.start(); setCur(label);
+      stopT.current = setTimeout(() => { try { mr.stop(); } catch {} }, 6000); // 6초까지
+    } catch { setMsg('마이크를 쓸 수 없어요. 브라우저에서 마이크 허락을 눌러 주세요.'); }
+  };
+  if (!cells.length) return <div className="rounded-2xl border-2 border-stone-200 bg-white p-6 text-sm text-stone-500">먼저 말하는 판을 하나 열고 다시 들어와 주세요. 열어 둔 판의 칸마다 녹음할 수 있어요.</div>;
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <p className="text-sm text-stone-600">"🎙️ 녹음"을 누르고 말한 뒤 "■ 그만"을 눌러요(6초까지). 녹음한 낱말은 어느 판에서 눌러도 이 목소리로 나와요.</p>
+      {cur && <div className="font-bold" style={{ color: '#C62828' }}>● 녹음 중… “{cur}”</div>}
+      {msg && <div className="font-bold" style={{ color: '#C62828' }}>{msg}</div>}
+      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(104px, 1fr))' }}>
+        {cells.map((c, i) => { const has = voiceIdx.includes(c.label); return (
+          <div key={c.label + i} className="rounded-2xl border-[3px] p-2 text-center bg-white" style={{ borderColor: has ? BOARD_PINK : '#EADFD6' }}>
+            <button onClick={() => speak(c.label)} className="block w-full">
+              {c.image ? <img src={c.image} alt="" className="w-14 h-14 object-contain mx-auto" draggable={false} /> : <div className="h-14" />}
+              <div className="font-bold text-sm break-keep">{c.label}</div>
+            </button>
+            <div className="text-xs text-stone-500">{has ? '🎤 내 목소리' : '🤖 기계 목소리'}</div>
+            <div className="flex gap-1 justify-center mt-1 flex-wrap">
+              <button onClick={() => rec(c.label)} disabled={!!cur && cur !== c.label} className="text-xs px-2 py-1 rounded-lg border border-stone-300 disabled:opacity-40">{cur === c.label ? '■ 그만' : '🎙️ 녹음'}</button>
+              {has && <button onClick={() => { if (safeConfirm(`'${c.label}' 녹음을 지울까요?`)) deleteVoice(c.label); }} className="text-xs px-2 py-1 rounded-lg border border-stone-300">지우기</button>}
+            </div>
+          </div>
+        ); })}
+      </div>
+    </div>
+  );
+}
+function ToolMood({ st, update, speak, Picker }) {
+  const moods = st.moods || TOOL_MOOD_DEFAULT;
+  const [editIdx, setEditIdx] = useState(null);
+  const [edit, setEdit] = useState(false);
+  const today = toolDay();
+  const log = st.moodLog || {};
+  const days = Array.from({ length: 7 }, (_, k) => { const d = new Date(); d.setDate(d.getDate() - (6 - k)); return d; });
+  const WD = ['일', '월', '화', '수', '목', '금', '토'];
+  const pick = (i) => {
+    if (edit) { setEditIdx(i); return; }
+    speak(moods[i].name); update({ moodLog: { ...log, [today]: { ...moods[i] } } });
+  };
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div className="text-2xl font-bold">오늘 기분이 어때요?</div>
+      <div className="grid gap-2 w-full" style={{ gridTemplateColumns: `repeat(${moods.length}, minmax(0, 1fr))` }}>
+        {moods.map((m, i) => (
+          <button key={m.id + i} onClick={() => pick(i)} className="rounded-2xl border-[3px] bg-white py-2 px-0.5 flex flex-col items-center gap-1 min-w-0"
+            style={{ borderColor: (edit ? editIdx === i : log[today]?.id === m.id) ? BOARD_PINK : '#EADFD6', background: (!edit && log[today]?.id === m.id) ? '#FCE9ED' : '#fff' }}>
+            <ToolPic it={m} px={56} /><span className="text-sm font-bold break-keep">{m.name}</span>
+          </button>
+        ))}
+      </div>
+      <div className="w-full overflow-x-auto">
+        <table className="w-full text-sm border-collapse"><tbody>
+          <tr>{days.map(d => <th key={d} className="border border-stone-200 py-1 font-normal text-stone-500">{d.getMonth() + 1}/{d.getDate()}<br />{WD[d.getDay()]}</th>)}</tr>
+          <tr>{days.map(d => { const v = log[toolDay(d)]; return <td key={d} className="border border-stone-200 py-1.5 text-center">{v ? <span className="inline-flex flex-col items-center"><ToolPic it={v} px={28} /><span className="text-[11px]">{v.name}</span></span> : ''}</td>; })}</tr>
+        </tbody></table>
+      </div>
+      <button onClick={() => { setEdit(e => !e); setEditIdx(null); }} className="px-3 py-2 rounded-xl border border-stone-300 bg-white text-sm">{edit ? '다 바꿨어요' : '기분 그림 바꾸기'}</button>
+      {edit && <div className="w-full"><p className="text-sm text-stone-500 mb-1">{editIdx === null ? '위에서 바꿀 기분을 먼저 눌러요' : `‘${moods[editIdx].name}’ 자리에 넣을 그림·사진 고르기 (이름은 그대로)`}</p>
+        {editIdx !== null && <Picker onPick={(it) => { update({ moods: moods.map((m, j) => j === editIdx ? { ...it, id: 'mood_' + it.id, name: m.name } : m) }); setEditIdx(null); }} />}</div>}
+    </div>
+  );
+}
+function ToolRecords({ kidKey, kidName, st, update }) {
+  const [recs, setRecs] = useState(null);
+  const [bid, setBid] = useState(null);
+  const [goalText, setGoalText] = useState(st.goal ? String(st.goal) : '');
+  useEffect(() => { let off = false; (async () => { let v = []; try { const r = await dataGet('aac_records:' + kidKey); if (r?.value) v = JSON.parse(r.value) || []; } catch {} if (!off) setRecs(v); })(); return () => { off = true; }; }, [kidKey]);
+  if (!recs) return <p className="text-sm text-stone-500 p-4">불러오는 중…</p>;
+  if (!recs.length) return <div className="rounded-2xl border-2 border-stone-200 bg-white p-6 text-sm text-stone-600 leading-relaxed">아직 {kidName} 기록이 없어요.<br />말하는 판에서 정답 연습을 끝까지 하면 결과표가 나올 때마다 여기에 자동으로 쌓여요.</div>;
+  const byB = {}; recs.forEach(r => { (byB[r.b] = byB[r.b] || { name: r.n, list: [] }).list.push(r); });
+  const ids = Object.keys(byB); const cur = bid && byB[bid] ? bid : ids[ids.length - 1];
+  const list = byB[cur].list.slice(-12); const v = list.map(r => Math.round(r.ok / Math.max(1, r.all) * 100));
+  const goal = st.goal ? Number(st.goal) : null;
+  const W = 600, H = 240, px = i => (list.length === 1 ? W / 2 : 50 + i * (W - 80) / (list.length - 1)), py = x => H - 30 - x * (H - 60) / 100;
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div className="flex flex-wrap gap-1.5">{ids.map(k => <button key={k} onClick={() => setBid(k)} className="px-3 py-1.5 rounded-full border-2 text-sm bg-white" style={k === cur ? { borderColor: BOARD_PINK, background: '#FCE9ED', fontWeight: 700 } : { borderColor: '#EADFD6' }}>{byB[k].name}</button>)}</div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
+        {[0, 25, 50, 75, 100].map(y => <g key={y}><line x1="50" x2={W - 30} y1={py(y)} y2={py(y)} stroke="#EADFD6" /><text x="40" y={py(y) + 4} fontSize="12" textAnchor="end" fill="#7C716B">{y}%</text></g>)}
+        {goal !== null && goal > 0 && goal <= 100 && <g><line x1="50" x2={W - 30} y1={py(goal)} y2={py(goal)} stroke="#3D8B5A" strokeDasharray="6 5" /><text x={W - 30} y={py(goal) - 6} fontSize="12" textAnchor="end" fill="#3D8B5A">목표 {goal}%</text></g>}
+        <polyline fill="none" stroke={BOARD_PINK} strokeWidth="4" points={v.map((x, i) => `${px(i)},${py(x)}`).join(' ')} />
+        {v.map((x, i) => <g key={i}><circle cx={px(i)} cy={py(x)} r="6" fill={BOARD_PINK} /><text x={px(i)} y={py(x) - 12} fontSize="13" textAnchor="middle" fontWeight="bold" fill="#2F2724">{x}%</text><text x={px(i)} y={H - 8} fontSize="12" textAnchor="middle" fill="#7C716B">{list[i].d.slice(5).replace('-', '/')}</text></g>)}
+      </svg>
+      <div className="overflow-x-auto"><table className="w-full text-sm border-collapse"><tbody>
+        <tr><th className="border border-stone-200 p-1.5 font-normal text-stone-500">날짜</th>{list.map((r, i) => <th key={i} className="border border-stone-200 p-1.5 font-normal">{r.d.slice(5).replace('-', '/')}</th>)}</tr>
+        <tr><td className="border border-stone-200 p-1.5 text-stone-500">정반응</td>{list.map((r, i) => <td key={i} className="border border-stone-200 p-1.5 text-center">{r.ok}/{r.all}</td>)}</tr>
+        <tr><td className="border border-stone-200 p-1.5 text-stone-500">정반응률</td>{v.map((x, i) => <td key={i} className="border border-stone-200 p-1.5 text-center font-bold">{x}%</td>)}</tr>
+      </tbody></table></div>
+      <div className="flex items-center gap-2 flex-wrap text-sm">
+        <span className="text-stone-500">목표 기준</span>
+        <input value={goalText} onChange={(e) => setGoalText(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder="예: 80" inputMode="numeric" className="w-20 px-2 py-1 rounded-lg border-2 border-stone-200" />%
+        <button onClick={() => update({ goal: goalText ? Math.min(100, Number(goalText)) : '' })} className="px-3 py-1 rounded-lg border border-stone-300 bg-white">정하기</button>
+        <span className="text-xs text-stone-400">비워 두면 목표 선이 안 나와요.</span>
+      </div>
     </div>
   );
 }
@@ -5205,6 +5456,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const [showLibrary, setShowLibrary] = useState(false); // 자료실
   const [showPiano, setShowPiano] = useState(false); // 색깔 피아노
   const [showTools, setShowTools] = useState(false); // 수업 도구
+  const [voiceIdx, setVoiceIdx] = useState([]); // 내 목소리로 녹음한 낱말
+  const voiceCache = useRef({});
   // 영상 소리 끄기 (이 기기에서 기억)
   const [videoMuted, setVideoMuted] = useState(() => { try { return localStorage.getItem('aac_video_muted') === '1'; } catch { return false; } });
   const toggleVideoMuted = () => setVideoMuted(m => {
@@ -5267,6 +5520,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       setBoards(list);
       setBuiltins(bi);
       setKids(Array.isArray(kidList) ? kidList : []);
+      try { const vi = await dataGet('aac_voice_index'); if (vi?.value) setVoiceIdx(JSON.parse(vi.value) || []); } catch {}
       setActiveId(prev => (prev && (list.some(b => b.id === prev) || bi.some(b => b.id === prev && !b.unlisted))) ? prev : (list[0]?.id || bi.find(b => !b.unlisted)?.id || null));
       if (res._error) safeAlert('판을 불러오지 못했어요. 잠시 뒤 새로고침해 주세요.');
       setLoaded(true);
@@ -5695,6 +5949,17 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   }, [practiceOn, pIdx, useCells, board?.id]);
   const doneN = targetPages.filter(k => score[k] !== undefined).length;
   const scoreN = doneN, scoreOk = targetPages.filter(k => score[k] === true).length;
+  // 정답 연습 결과표가 나올 때마다 아이별 기록에 쌓기 (수업 도구 → 정답 연습 기록)
+  const recSavedRef = useRef(false);
+  useEffect(() => {
+    if (!showResult) { recSavedRef.current = false; return; }
+    if (recSavedRef.current || !board || !targetPages.length || !scoreN) return;
+    recSavedRef.current = true;
+    const rec = { d: toolDay(), t: Date.now(), b: board.id, n: board.name, ok: scoreOk, all: targetPages.length };
+    const key = 'aac_records:' + (curKid ? curKid.id : 'all');
+    (async () => { let v = []; try { const r = await dataGet(key); if (r?.value) v = JSON.parse(r.value) || []; } catch {} await dataSet(key, JSON.stringify([...v, rec].slice(-500))); })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showResult]);
   const renderPractice = (large) => {
     if (mode !== 'use') return null;
     const canSet = hasAnswers || !!cellSets;
@@ -5869,8 +6134,30 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       </div>
     );
   };
+  const playVoice = async (t) => {
+    try {
+      let url = voiceCache.current[t];
+      if (!url) { const r = await dataGet('aac_voice:' + t); url = r?.value || ''; if (url) voiceCache.current[t] = url; }
+      if (!url) return false;
+      try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch {}
+      await new Audio(url).play(); return true;
+    } catch { return false; }
+  };
+  const saveVoice = async (label, url) => {
+    const ok = await dataSet('aac_voice:' + label, url);
+    if (!ok) return false;
+    voiceCache.current[label] = url;
+    const next = voiceIdx.includes(label) ? voiceIdx : [...voiceIdx, label];
+    setVoiceIdx(next); dataSet('aac_voice_index', JSON.stringify(next));
+    return true;
+  };
+  const deleteVoice = async (label) => {
+    await dataDelete('aac_voice:' + label); delete voiceCache.current[label];
+    const next = voiceIdx.filter(x => x !== label); setVoiceIdx(next); dataSet('aac_voice_index', JSON.stringify(next));
+  };
   const speakText = (t) => {
     if (!t) return;
+    if (voiceIdx.includes(t)) { playVoice(t).then(ok => { if (!ok) boardSpeak(t, rate); }); return; }
     if (!boardSpeak(t, rate) && !speechWarned.current) {
       speechWarned.current = true;
       safeAlert('이 브라우저에서는 소리로 읽기를 쓸 수 없어요.\n크롬이나 사파리 최신 버전에서 열어 주세요.');
@@ -6398,6 +6685,8 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       {showPiano && <PianoModal onClose={() => setShowPiano(false)} />}
       {showTools && <ToolsModal kidKey={curKid ? curKid.id : 'all'} kidName={curKid ? curKid.name : '모든 아이'} speak={speakText}
         boardItems={(useCells || board?.cells || []).map((c, i) => { const v = cellView(c, i); return v.image && v.label ? { id: `b${board?.id}_${i}`, name: v.label, img: v.image } : null; }).filter(Boolean)}
+        voiceCells={(useCells || board?.cells || []).map((c, i) => cellView(c, i)).filter(v => v.label && !v.hidden).map(v => ({ label: v.label, image: v.image })).filter((v, i, a) => a.findIndex(x => x.label === v.label) === i)}
+        voiceIdx={voiceIdx} saveVoice={saveVoice} deleteVoice={deleteVoice}
         onClose={() => setShowTools(false)} />}
       {renderPracticeSettings()}
       {showPicker && (() => {
