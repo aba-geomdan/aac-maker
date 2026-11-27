@@ -6028,9 +6028,19 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
           <div className="overflow-auto px-4 pb-4">
             {hasAnswers && practice && !board.sort && (
               <Row label="보기 수">
-                {[[1, '1개 (정답만)'], [2, '2개'], [3, '3개'], [0, '전체']].map(([v, l]) => (
-                  <button key={v} onClick={() => setChoiceN(v)} aria-pressed={choiceN === v} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(choiceN === v)}>{l}</button>
-                ))}
+                {(() => {
+                  const maxN = Math.max(1, (useCells || board.cells || []).filter(c => c && (c.label || c.cardId)).length);
+                  const cur = choiceN && choiceN < maxN ? choiceN : 0; // 0 = 전체
+                  const shown = cur || maxN;
+                  return (<>
+                    <button onClick={() => setChoiceN(Math.max(1, shown - 1))} disabled={shown <= 1} aria-label="보기 하나 줄이기"
+                      className="w-9 h-9 rounded-full border-2 text-lg font-bold disabled:opacity-30" style={chip(false)}>−</button>
+                    <span className="min-w-[88px] text-center font-bold">{cur === 0 ? `전체 (${maxN}개)` : cur === 1 ? '1개 (정답만)' : `${cur}개`}</span>
+                    <button onClick={() => setChoiceN(shown + 1 >= maxN ? 0 : shown + 1)} disabled={cur === 0} aria-label="보기 하나 늘리기"
+                      className="w-9 h-9 rounded-full border-2 text-lg font-bold disabled:opacity-30" style={chip(false)}>+</button>
+                    <button onClick={() => setChoiceN(0)} aria-pressed={cur === 0} className="rounded-full border-2 px-3 py-1 text-sm font-bold" style={chip(cur === 0)}>전체</button>
+                  </>);
+                })()}
               </Row>
             )}
             {hasAnswers && practice && board.frame && (
