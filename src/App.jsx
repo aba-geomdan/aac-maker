@@ -3777,7 +3777,7 @@ function ToolPic({ it, px, round = 6 }) {
   if (it.img) return <img src={it.img} alt="" draggable={false} style={{ width: px, height: px, objectFit: 'cover', borderRadius: Math.round(px / round), display: 'inline-block' }} />;
   return <span style={{ fontSize: Math.round(px * 0.8), lineHeight: 1 }}>{it.emoji}</span>;
 }
-function ToolsModal({ kidKey, kidName, boardItems, voiceCells, voiceIdx, saveVoice, deleteVoice, speak, onClose }) {
+function ToolsModal({ kidKey, kidName, boardItems, picSets = [], voiceCells, voiceIdx, saveVoice, deleteVoice, speak, onClose }) {
   const [tab, setTab] = useState('timer');
   const [st, setSt] = useState(null); // 저장되는 설정
   const [photoAsk, setPhotoAsk] = useState(null); // { img, onDone }
@@ -3800,7 +3800,18 @@ function ToolsModal({ kidKey, kidName, boardItems, voiceCells, voiceIdx, saveVoi
     saveTimer.current = setTimeout(() => { dataSet(KEY, JSON.stringify(next)); }, 600);
     return next;
   });
-  const allItems = st ? [...st.photos, ...boardItems, ...TOOL_DEFAULT_ITEMS] : [];
+  const [picSrc, setPicSrc] = useState(''); // '' = 내 사진·지금 판·기본 그림, 아니면 기본 판 id (나의 하루 칩)
+  const [srcItems, setSrcItems] = useState({});
+  useEffect(() => {
+    if (!picSrc || srcItems[picSrc]) return;
+    (async () => {
+      let cells = [];
+      try { const r = await sharedGet(SHARED_BOARD_KEY(picSrc)); const o = r?.value ? JSON.parse(r.value) : null; cells = (o?.cells || []).filter(c => c && c.label && c.image); } catch {}
+      setSrcItems(prev => ({ ...prev, [picSrc]: cells.map((c, i) => ({ id: `d_${picSrc}_${i}`, name: c.label, img: c.image })) }));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picSrc]);
+  const allItems = !st ? [] : picSrc ? (srcItems[picSrc] || []) : [...st.photos, ...boardItems, ...TOOL_DEFAULT_ITEMS];
   const choose = async (it) => (it.img && !/^data:/.test(it.img) ? { ...it, img: await toolSquare(it.img, 240) } : it);
   const onPhotoFile = (file, onDone) => {
     if (!file) return;
@@ -3815,7 +3826,16 @@ function ToolsModal({ kidKey, kidName, boardItems, voiceCells, voiceIdx, saveVoi
     done(it);
   };
   const removePhoto = (it) => { if (safeConfirm(`'${it.name}' 사진을 지울까요?`)) update({ photos: st.photos.filter(p => p.id !== it.id) }); };
-  const Picker = ({ selectedIds = [], onPick }) => (
+  const Picker = ({ selectedIds = [], onPick }) => (<div>
+    {picSets.length > 0 && (
+      <select value={picSrc} onChange={(e) => setPicSrc(e.target.value)} aria-label="그림 묶음 고르기" className="mb-1.5 w-full max-w-sm text-sm px-2 py-1.5 rounded-lg border-2 border-stone-200 bg-white">
+        <option value="">내 사진 · 지금 판 · 기본 그림</option>
+        {[...new Set(picSets.map(b => b.group))].map(g => (
+          <optgroup key={g} label={g.replace(' (이어짐)', '')}>{picSets.filter(b => b.group === g).map(b => <option key={b.id} value={b.id}>{b.name.split(' · ')[0]}</option>)}</optgroup>
+        ))}
+      </select>
+    )}
+    {picSrc && !srcItems[picSrc] && <p className="text-sm text-stone-500 p-2">그림을 불러오는 중…</p>}
     <div className="flex flex-wrap gap-1.5 max-h-44 overflow-y-auto p-1">
       {allItems.map((it, i) => (
         <span key={it.id + '_' + i} className="relative">
@@ -3829,7 +3849,7 @@ function ToolsModal({ kidKey, kidName, boardItems, voiceCells, voiceIdx, saveVoi
         📷 사진<input type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; onPhotoFile(f, onPick); }} />
       </label>
     </div>
-  );
+  </div>);
   const TABS = [['timer', '⏱️ 시각 타이머'], ['sched', '📋 오늘 일과표'], ['token', '⭐ 토큰판'], ['ft', '➡️ 먼저–다음'], ['choice', '🙋 강화제 고르기'], ['wheel', '🎡 돌림판'], ['mem', '🃏 같은 그림 찾기'], ['bubble', '🫧 눌러 보기'], ['mood', '😊 오늘 기분'], ['voice', '🎤 내 목소리'], ['rec', '📈 정답 연습 기록']];
   const opt = (on) => ({ className: 'px-3 py-1.5 rounded-full border-2 text-sm bg-white', style: on ? { borderColor: BOARD_PINK, background: '#FCE9ED', fontWeight: 700 } : { borderColor: '#EADFD6' } });
   return (
@@ -6684,6 +6704,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       {showLibrary && <LibraryModal isAdmin={isAdmin} onClose={() => setShowLibrary(false)} />}
       {showPiano && <PianoModal onClose={() => setShowPiano(false)} />}
       {showTools && <ToolsModal kidKey={curKid ? curKid.id : 'all'} kidName={curKid ? curKid.name : '모든 아이'} speak={speakText}
+        picSets={builtins.filter(b => !b.unlisted && String(b.group || '').startsWith('나의 하루')).map(b => ({ id: b.id, name: b.name, group: b.group }))}
         boardItems={(useCells || board?.cells || []).map((c, i) => { const v = cellView(c, i); return v.image && v.label ? { id: `b${board?.id}_${i}`, name: v.label, img: v.image } : null; }).filter(Boolean)}
         voiceCells={(useCells || board?.cells || []).map((c, i) => cellView(c, i)).filter(v => v.label && !v.hidden).map(v => ({ label: v.label, image: v.image })).filter((v, i, a) => a.findIndex(x => x.label === v.label) === i)}
         voiceIdx={voiceIdx} saveVoice={saveVoice} deleteVoice={deleteVoice}
@@ -6692,7 +6713,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       {showPicker && (() => {
         const AREAS = [
           { k: 'play', name: '🧸 놀이', groups: ['기본 놀이판 (틈새톡톡)', '놀이 AAC (톡톡 붙이고 조물조물)', '엄마 로봇을 움직여요 (이어짐)'] },
-          { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '생활동화 AAC 거실 (이어짐)', '생활동화 AAC 어린이집 (이어짐)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기'] },
+          { k: 'life', name: '🏠 생활', groups: ['상황별 포켓 AAC (틈새톡톡)', '생활동화 AAC 거실 (이어짐)', '생활동화 AAC 어린이집 (이어짐)', '나의 하루 · 여아 그림 (이어짐)', '나의 하루 · 여아 실사 (이어짐)', '나의 하루 · 남아 그림 (이어짐)', '나의 하루 · 남아 실사 (이어짐)', '오늘도 스스로 준비해요 (이어짐)', '생활 표지판', '끝말잇기'] },
           { k: 'body', name: '🩹 몸 · 아파요', groups: ['아파요 다쳤어요 (칩판)', '아파요 다쳤어요 (그림 보고 말하기)', '신체 부위 AAC 아파요 (이어짐)', '신체 부위 공부 (다원쌤)'] },
           { k: 'feel', name: '😊 기분 · 하는 말', groups: ['아하! 한 판으로 말해요 (아하쌤)', '기분', '이럴 때 무슨 말 해야 돼?'] },
           { k: 'verb', name: '🏃 동사', groups: ['만 3세 고빈도 동사', '하고 있어요 · 다 했어요 (이어짐)', '내가 했어요 · 친구에게 해 줬어요 (이어짐)'] },
