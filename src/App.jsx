@@ -3750,6 +3750,272 @@ function PianoModal({ onClose }) {
   );
 }
 
+// ── 수업 도구 (시각 타이머 · 토큰판 · 먼저–다음 · 강화제 고르기 · 눌러 보기) ──
+// 아이별 설정·사진은 aac_data 'aac_tools:{아이 id}' 한 곳에 저장
+const TOOL_DEFAULT_ITEMS = [['🍪', '과자'], ['🧃', '주스'], ['🫧', '비눗방울'], ['🚗', '자동차'], ['🧩', '퍼즐'], ['📱', '핸드폰'], ['🎹', '피아노'], ['🍭', '사탕'], ['📚', '책 읽기'], ['✏️', '공부'], ['🧹', '정리하기'], ['🍽️', '밥 먹기']].map(([e, n], i) => ({ id: 'e' + i, name: n, emoji: e }));
+let toolCtx = null;
+function toolBeep(f = 880, d = 0.25, v = 0.25) {
+  try {
+    toolCtx = toolCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (toolCtx.state === 'suspended') toolCtx.resume();
+    const t = toolCtx.currentTime, o = toolCtx.createOscillator(), g = toolCtx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(f, t); g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.001, t + d);
+    o.connect(g).connect(toolCtx.destination); o.start(t); o.stop(t + d);
+  } catch {}
+}
+const toolChime = () => [784, 988, 1175].forEach((f, i) => setTimeout(() => toolBeep(f, 0.5, 0.2), i * 180));
+// 사진·그림을 가운데 네모로 잘라 작게 (저장 공간 아끼기)
+function toolSquare(src, S = 320) {
+  return new Promise((res) => {
+    const im = new Image(); im.crossOrigin = 'anonymous';
+    im.onload = () => { try { const c = document.createElement('canvas'), k = Math.min(im.width, im.height); c.width = c.height = S; c.getContext('2d').drawImage(im, (im.width - k) / 2, (im.height - k) / 2, k, k, 0, 0, S, S); res(c.toDataURL('image/jpeg', 0.82)); } catch { res(src); } };
+    im.onerror = () => res(src); im.src = src;
+  });
+}
+function ToolPic({ it, px, round = 6 }) {
+  if (!it) return null;
+  if (it.img) return <img src={it.img} alt="" draggable={false} style={{ width: px, height: px, objectFit: 'cover', borderRadius: Math.round(px / round), display: 'inline-block' }} />;
+  return <span style={{ fontSize: Math.round(px * 0.8), lineHeight: 1 }}>{it.emoji}</span>;
+}
+function ToolsModal({ kidKey, kidName, boardItems, speak, onClose }) {
+  const [tab, setTab] = useState('timer');
+  const [st, setSt] = useState(null); // 저장되는 설정
+  const [photoAsk, setPhotoAsk] = useState(null); // { img, onDone }
+  const [photoName, setPhotoName] = useState('');
+  const [full, setFull] = useState(null);
+  const saveTimer = useRef(null);
+  const KEY = 'aac_tools:' + kidKey;
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      let v = null; try { const r = await dataGet(KEY); if (r?.value) v = JSON.parse(r.value); } catch {}
+      if (!off) setSt({ photos: [], tokenN: 5, reward: TOOL_DEFAULT_ITEMS[0], ftA: TOOL_DEFAULT_ITEMS[9], ftB: TOOL_DEFAULT_ITEMS[6], choiceK: 3, choices: [0, 1, 3, 4].map(i => TOOL_DEFAULT_ITEMS[i]), log: [], ...(v || {}) });
+    })();
+    return () => { off = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [KEY]);
+  const update = (patch) => setSt(prev => {
+    const next = { ...prev, ...patch };
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => { dataSet(KEY, JSON.stringify(next)); }, 600);
+    return next;
+  });
+  const allItems = st ? [...st.photos, ...boardItems, ...TOOL_DEFAULT_ITEMS] : [];
+  const choose = async (it) => (it.img && !/^data:/.test(it.img) ? { ...it, img: await toolSquare(it.img, 240) } : it);
+  const onPhotoFile = (file, onDone) => {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = async () => { const img = await toolSquare(r.result, 320); setPhotoName(''); setPhotoAsk({ img, onDone }); };
+    r.readAsDataURL(file);
+  };
+  const confirmPhoto = () => {
+    const it = { id: 'p' + Date.now(), name: photoName.trim() || '내 사진', img: photoAsk.img };
+    const done = photoAsk.onDone; setPhotoAsk(null);
+    update({ photos: [it, ...st.photos].slice(0, 30) });
+    done(it);
+  };
+  const removePhoto = (it) => { if (safeConfirm(`'${it.name}' 사진을 지울까요?`)) update({ photos: st.photos.filter(p => p.id !== it.id) }); };
+  const Picker = ({ selectedIds = [], onPick }) => (
+    <div className="flex flex-wrap gap-1.5 max-h-44 overflow-y-auto p-1">
+      {allItems.map((it, i) => (
+        <span key={it.id + '_' + i} className="relative">
+          <button onClick={async () => onPick(await choose(it))} aria-label={it.name} title={it.name} aria-pressed={selectedIds.includes(it.id)}
+            className="w-12 h-12 rounded-xl border-2 bg-white grid place-items-center overflow-hidden"
+            style={selectedIds.includes(it.id) ? { borderColor: BOARD_PINK, background: '#FCE9ED' } : { borderColor: '#EADFD6' }}><ToolPic it={it} px={38} /></button>
+          {it.id.startsWith('p') && <button onClick={() => removePhoto(it)} aria-label={`${it.name} 사진 지우기`} className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-stone-700 text-white text-[11px] leading-none">×</button>}
+        </span>
+      ))}
+      <label className="h-12 px-3 rounded-xl border-2 border-dashed flex items-center gap-1 font-bold cursor-pointer text-sm" style={{ borderColor: BOARD_PINK, color: BOARD_PINK }}>
+        📷 사진<input type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; onPhotoFile(f, onPick); }} />
+      </label>
+    </div>
+  );
+  const TABS = [['timer', '⏱️ 시각 타이머'], ['token', '⭐ 토큰판'], ['ft', '➡️ 먼저–다음'], ['choice', '🙋 강화제 고르기'], ['bubble', '🫧 눌러 보기']];
+  const opt = (on) => ({ className: 'px-3 py-1.5 rounded-full border-2 text-sm bg-white', style: on ? { borderColor: BOARD_PINK, background: '#FCE9ED', fontWeight: 700 } : { borderColor: '#EADFD6' } });
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col select-none" style={{ background: '#FFF8F1', color: '#2F2724' }} role="dialog" aria-label="수업 도구">
+      <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-stone-200 flex-none">
+        <span className="font-bold text-lg">🧰 수업 도구</span>
+        <span className="text-sm text-stone-500 truncate">{kidName}</span>
+        <button onClick={onClose} className="ml-auto px-3 py-1.5 rounded-xl border border-stone-300 bg-white text-sm font-bold flex items-center gap-1"><X className="w-4 h-4" /> 닫기</button>
+      </div>
+      <div className="flex gap-1.5 flex-wrap px-3 pt-3 flex-none max-w-3xl w-full mx-auto">
+        {TABS.map(([k, n]) => <button key={k} onClick={() => setTab(k)} aria-pressed={tab === k} {...opt(tab === k)}>{n}</button>)}
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-3">
+        <div className="max-w-3xl mx-auto">
+          {!st ? <p className="text-sm text-stone-500 p-4">불러오는 중…</p> : (
+            <>
+              {tab === 'timer' && <ToolTimer speak={speak} opt={opt} />}
+              {tab === 'token' && <ToolToken st={st} update={update} speak={speak} opt={opt} Picker={Picker} setFull={setFull} />}
+              {tab === 'ft' && <ToolFirstThen st={st} update={update} speak={speak} Picker={Picker} />}
+              {tab === 'choice' && <ToolChoice st={st} update={update} speak={speak} opt={opt} Picker={Picker} />}
+              {tab === 'bubble' && <ToolBubble />}
+            </>
+          )}
+        </div>
+      </div>
+      {photoAsk && (
+        <div className="fixed inset-0 z-[60] bg-black/45 grid place-items-center p-4" onClick={(e) => { if (e.target === e.currentTarget) setPhotoAsk(null); }}>
+          <div className="bg-white rounded-3xl p-6 w-full max-w-xs text-center">
+            <img src={photoAsk.img} alt="" className="w-40 h-40 object-cover rounded-2xl mx-auto" />
+            <p className="mt-3 mb-1.5 font-bold">이 사진 이름</p>
+            <input autoFocus value={photoName} onChange={(e) => setPhotoName(e.target.value)} placeholder="예: 뽀로로 자동차"
+              onKeyDown={(e) => { if (e.key === 'Enter') confirmPhoto(); }}
+              className="w-full text-base px-3 py-2 rounded-xl border-2 border-stone-200" />
+            <div className="flex gap-2 justify-center mt-3">
+              <button onClick={() => setPhotoAsk(null)} className="px-4 py-2 rounded-xl border border-stone-300">취소</button>
+              <button onClick={confirmPhoto} className="px-4 py-2 rounded-xl text-white font-bold" style={{ background: BOARD_PINK }}>넣기</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {full && (
+        <div className="fixed inset-0 z-[60] bg-black/45 grid place-items-center" onClick={() => setFull(null)}>
+          <div className="bg-white rounded-3xl px-9 py-7 text-center"><ToolPic it={full} px={150} /><div className="text-4xl font-bold mt-3">다 모았어요!</div></div>
+        </div>
+      )}
+    </div>
+  );
+}
+function ToolTimer({ speak, opt }) {
+  const [total, setTotal] = useState(60);
+  const [left, setLeft] = useState(60);
+  const [run, setRun] = useState(false);
+  const leftRef = useRef(60);
+  useEffect(() => {
+    if (!run) return;
+    let last = Date.now();
+    const id = setInterval(() => {
+      const n = Date.now(); leftRef.current -= (n - last) / 1000; last = n;
+      if (leftRef.current <= 0) { leftRef.current = 0; setLeft(0); setRun(false); toolChime(); setTimeout(() => speak('끝났어요'), 600); return; }
+      setLeft(leftRef.current);
+    }, 100);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run]);
+  const setT = (s) => { setRun(false); setTotal(s); leftRef.current = s; setLeft(s); };
+  const f = total ? left / total : 0, a = f * 2 * Math.PI;
+  const d = f >= 0.999 ? 'M100,100 m-80,0 a80,80 0 1,0 160,0 a80,80 0 1,0 -160,0' : f <= 0 ? '' : `M100,100 L100,20 A80,80 0 ${a > Math.PI ? 1 : 0},1 ${100 + 80 * Math.sin(a)},${100 - 80 * Math.cos(a)} Z`;
+  const s = Math.ceil(left);
+  return (
+    <div className="flex flex-col items-center gap-4 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div className="flex flex-wrap gap-1.5 justify-center">{[['10초', 10], ['1분', 60], ['3분', 180], ['5분', 300], ['10분', 600]].map(([n, v]) => <button key={v} onClick={() => setT(v)} aria-pressed={total === v} {...opt(total === v)}>{n}</button>)}</div>
+      <svg viewBox="0 0 200 200" style={{ width: 'min(70vw, 300px)', height: 'auto' }}>
+        <circle cx="100" cy="100" r="92" fill="#fff" stroke="#EADFD6" strokeWidth="4" />
+        <path d={d} fill="#E53935" />
+        {Array.from({ length: 12 }, (_, i) => { const q = i * Math.PI / 6; return <line key={i} x1={100 + 82 * Math.sin(q)} y1={100 - 82 * Math.cos(q)} x2={100 + 90 * Math.sin(q)} y2={100 - 90 * Math.cos(q)} stroke="#7C716B" strokeWidth="3" />; })}
+        <circle cx="100" cy="100" r="7" fill="#2F2724" />
+      </svg>
+      <div className="text-5xl font-bold tabular-nums">{Math.floor(s / 60)}:{String(s % 60).padStart(2, '0')}</div>
+      <div className="flex gap-2">
+        <button onClick={() => { if (!run && leftRef.current <= 0) { leftRef.current = total; setLeft(total); } setRun(r => !r); }} className="px-5 py-2 rounded-xl text-white font-bold" style={{ background: BOARD_PINK }}>{run ? '멈춤' : '시작'}</button>
+        <button onClick={() => setT(total)} className="px-4 py-2 rounded-xl border border-stone-300 bg-white">처음부터</button>
+      </div>
+    </div>
+  );
+}
+function ToolToken({ st, update, speak, opt, Picker, setFull }) {
+  const [got, setGot] = useState(0);
+  const n = st.tokenN, rw = st.reward;
+  const tap = (i) => {
+    if (i < got) { setGot(i); return; }
+    const g = i + 1; setGot(g); toolBeep(660 + g * 40, 0.18);
+    if (g >= n) { toolChime(); setTimeout(() => speak(rw.name + '!'), 500); setFull(rw); setTimeout(() => setFull(null), 2600); }
+  };
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div className="flex flex-wrap gap-1.5 items-center justify-center"><span className="text-sm text-stone-500">칸 수</span>{[3, 5, 10].map(k => <button key={k} onClick={() => { update({ tokenN: k }); setGot(g => Math.min(g, k)); }} aria-pressed={n === k} {...opt(n === k)}>{k}개</button>)}</div>
+      <div className="w-full"><p className="text-sm text-stone-500 mb-1">모으면 받는 것</p><Picker selectedIds={[rw.id]} onPick={(it) => update({ reward: it })} /></div>
+      <div style={{ opacity: got >= n ? 1 : 0.35 }}><ToolPic it={rw} px={110} /></div>
+      <div className="font-bold -mt-2">{rw.name}</div>
+      <div className="flex flex-wrap gap-2.5 justify-center">
+        {Array.from({ length: n }, (_, i) => (
+          <button key={i} onClick={() => tap(i)} aria-label={`토큰 ${i + 1}`} className="rounded-full grid place-items-center"
+            style={{ width: 'min(15vw, 72px)', height: 'min(15vw, 72px)', fontSize: 'min(9vw, 40px)', border: i < got ? '4px solid #F2B705' : '4px dashed #EADFD6', background: i < got ? '#FFF6D6' : '#fff' }}>{i < got ? '⭐' : ''}</button>
+        ))}
+      </div>
+      <div className="flex items-center gap-2"><button onClick={() => setGot(0)} className="px-4 py-2 rounded-xl border border-stone-300 bg-white">다시 모으기</button><span className="text-sm text-stone-500">{got} / {n}</span></div>
+    </div>
+  );
+}
+function ToolFirstThen({ st, update, speak, Picker }) {
+  const [done, setDone] = useState(false);
+  const [picking, setPicking] = useState(null);
+  const a = st.ftA, b = st.ftB;
+  const slot = (k, it, title) => (
+    <button onClick={() => speak(`${title} ${it.name}`)} className="relative rounded-2xl border-[3px] p-3 text-center bg-white min-w-0"
+      style={k === 'b' && done ? { borderColor: BOARD_PINK, boxShadow: '0 0 0 4px #FCE9ED' } : { borderColor: '#EADFD6' }}>
+      <div className="text-2xl font-bold mb-1">{title}</div>
+      <div className="flex justify-center"><ToolPic it={it} px={120} /></div>
+      <div className="text-lg font-bold mt-1 break-keep">{it.name}</div>
+      {k === 'a' && done && <span className="absolute inset-0 grid place-items-center rounded-2xl text-[110px] font-bold" style={{ color: '#3D8B5A', background: 'rgba(255,255,255,.55)' }}>✓</span>}
+    </button>
+  );
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div className="grid grid-cols-2 gap-3 w-full">{slot('a', a, '먼저')}{slot('b', b, '다음')}</div>
+      {picking && <div className="w-full"><p className="text-sm text-stone-500 mb-1">{picking === 'a' ? '먼저' : '다음'} 그림 고르기</p><Picker selectedIds={[(picking === 'a' ? a : b).id]} onPick={(it) => { update(picking === 'a' ? { ftA: it } : { ftB: it }); setPicking(null); setDone(false); }} /></div>}
+      <div className="flex flex-wrap gap-2 justify-center">
+        <button onClick={() => { const v = !done; setDone(v); if (v) { toolChime(); setTimeout(() => speak('잘했어요. 이제 ' + b.name), 400); } }} className="px-4 py-2 rounded-xl text-white font-bold" style={{ background: BOARD_PINK }}>{done ? '처음으로' : '먼저 끝났어요!'}</button>
+        <button onClick={() => setPicking(p => p === 'a' ? null : 'a')} className="px-3 py-2 rounded-xl border border-stone-300 bg-white">먼저 바꾸기</button>
+        <button onClick={() => setPicking(p => p === 'b' ? null : 'b')} className="px-3 py-2 rounded-xl border border-stone-300 bg-white">다음 바꾸기</button>
+      </div>
+    </div>
+  );
+}
+function ToolChoice({ st, update, speak, opt, Picker }) {
+  const [sel, setSel] = useState(null);
+  const k = st.choiceK, list = st.choices.slice(0, k);
+  const pick = (it) => { if (list.some(x => x.id === it.id)) return; update({ choices: [it, ...st.choices.filter(x => x.id !== it.id)].slice(0, 6) }); setSel(null); };
+  const shuffle = () => { update({ choices: [...st.choices].map(v => [v, Math.random()]).sort((x, y) => x[1] - y[1]).map(v => v[0]) }); setSel(null); };
+  const tap = (i) => {
+    setSel(i); const it = list[i]; speak(it.name + ' 주세요');
+    const d = new Date();
+    update({ log: [{ t: `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`, name: it.name }, ...(st.log || [])].slice(0, 50) });
+  };
+  const counts = {}; (st.log || []).forEach(l => { counts[l.name] = (counts[l.name] || 0) + 1; });
+  const top = Object.entries(counts).sort((x, y) => y[1] - x[1]).slice(0, 5);
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-stone-200 bg-white p-4">
+      <div className="flex flex-wrap gap-1.5 items-center justify-center"><span className="text-sm text-stone-500">보기 수</span>{[2, 3, 4].map(x => <button key={x} onClick={() => { update({ choiceK: x }); setSel(null); }} aria-pressed={k === x} {...opt(k === x)}>{x}개</button>)}<button onClick={shuffle} className="px-3 py-1.5 rounded-xl border border-stone-300 bg-white text-sm">섞기</button></div>
+      <div className="w-full"><p className="text-sm text-stone-500 mb-1">보기 바꾸기</p><Picker selectedIds={list.map(x => x.id)} onPick={pick} /></div>
+      <div className="text-2xl font-bold">오늘은 뭐 할까?</div>
+      <div className="grid gap-2.5 w-full" style={{ gridTemplateColumns: `repeat(${list.length}, minmax(0, 1fr))` }}>
+        {list.map((it, i) => (
+          <button key={it.id + i} onClick={() => tap(i)} className="rounded-2xl border-[3px] bg-white py-3 px-1 flex flex-col items-center gap-1 min-w-0"
+            style={sel === i ? { borderColor: BOARD_PINK, background: '#FCE9ED' } : { borderColor: '#EADFD6' }}>
+            <ToolPic it={it} px={88} /><span className="text-base font-bold break-keep">{it.name}</span>
+          </button>
+        ))}
+      </div>
+      <div className="w-full text-sm text-stone-600">
+        <b>자주 고른 것</b> {top.length ? top.map(([nm, c]) => <span key={nm} className="mr-2">{nm} {c}번</span>) : <span className="text-stone-400">(아직 없어요)</span>}
+        {(st.log || []).length > 0 && <button onClick={() => { if (safeConfirm('고른 기록을 모두 지울까요?')) update({ log: [] }); }} className="ml-2 text-xs underline text-stone-400">기록 지우기</button>}
+      </div>
+    </div>
+  );
+}
+function ToolBubble() {
+  const [bubs, setBubs] = useState([]);
+  const lastRef = useRef(0);
+  const make = (e) => {
+    const r = e.currentTarget.getBoundingClientRect(); const s = 30 + Math.random() * 50; const id = Math.random();
+    setBubs(b => [...b.slice(-40), { id, x: e.clientX - r.left - s / 2, y: e.clientY - r.top - s / 2, s }]);
+    setTimeout(() => setBubs(b => b.filter(x => x.id !== id)), 2500);
+    toolBeep(500 + Math.random() * 700, 0.12, 0.2);
+  };
+  return (
+    <div className="relative rounded-2xl overflow-hidden cursor-pointer" style={{ height: 'min(65vh, 520px)', background: 'linear-gradient(#DDF1FF,#BFE3FF)', touchAction: 'none' }}
+      onPointerDown={(e) => { e.preventDefault(); make(e); try { e.currentTarget.setPointerCapture(e.pointerId); } catch {} }}
+      onPointerMove={(e) => { if (e.buttons === 0 && e.pointerType === 'mouse') return; if (e.pressure === 0 && e.pointerType !== 'mouse') return; const n = Date.now(); if (n - lastRef.current > 90) { lastRef.current = n; make(e); } }}>
+      <style>{'@keyframes toolRise{to{transform:translateY(-160px) scale(1.4);opacity:0}}'}</style>
+      {bubs.map(b => <span key={b.id} className="absolute rounded-full pointer-events-none" style={{ left: b.x, top: b.y, width: b.s, height: b.s, background: 'radial-gradient(circle at 30% 30%, rgba(255,255,255,.95), rgba(255,255,255,.25) 40%, rgba(120,180,255,.35))', border: '2px solid rgba(255,255,255,.8)', animation: 'toolRise 2.4s ease-out forwards' }} />)}
+      <p className="absolute inset-x-0 bottom-3 text-center font-bold m-0" style={{ color: '#3b6a92' }}>화면 아무 데나 눌러 보세요!</p>
+    </div>
+  );
+}
+
 function LibraryModal({ isAdmin, onClose }) {
   const [items, setItems] = useState(null);
   const [err, setErr] = useState('');
@@ -4938,6 +5204,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
   const [showVoice, setShowVoice] = useState(false); // 목소리 고르기 창
   const [showLibrary, setShowLibrary] = useState(false); // 자료실
   const [showPiano, setShowPiano] = useState(false); // 색깔 피아노
+  const [showTools, setShowTools] = useState(false); // 수업 도구
   // 영상 소리 끄기 (이 기기에서 기억)
   const [videoMuted, setVideoMuted] = useState(() => { try { return localStorage.getItem('aac_video_muted') === '1'; } catch { return false; } });
   const toggleVideoMuted = () => setVideoMuted(m => {
@@ -5983,6 +6250,7 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
               <button onClick={() => setShowImport(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><Upload className="w-4 h-4" /> 칩판 넣기</button>
               <button onClick={() => setShowLibrary(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><FolderOpen className="w-4 h-4" /> 자료실</button>
               <button onClick={() => setShowPiano(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><span className="w-4 text-center">🎹</span> 색깔 피아노</button>
+              <button onClick={() => setShowTools(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2"><span className="w-4 text-center">🧰</span> 수업 도구</button>
               {kidId !== 'all' && <button onClick={removeKid} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2 text-stone-500"><X className="w-4 h-4" /> 아이 빼기 ({kidName})</button>}
               {isAdmin && <div className="my-1 border-t border-stone-100" />}
               {isAdmin && <button onClick={() => setShowBuiltinUpload(true)} className="w-full px-3 py-2 rounded-lg hover:bg-stone-50 flex items-center gap-2" style={{ color: '#993556' }}><Shield className="w-4 h-4" /> 기본 판 올리기</button>}
@@ -6128,6 +6396,9 @@ const SpeakingBoardView = ({ currentUser, library, setLibrary, categories, setCa
       {showVoice && <VoiceModal rate={rate} setRate={setRate} onClose={() => setShowVoice(false)} />}
       {showLibrary && <LibraryModal isAdmin={isAdmin} onClose={() => setShowLibrary(false)} />}
       {showPiano && <PianoModal onClose={() => setShowPiano(false)} />}
+      {showTools && <ToolsModal kidKey={curKid ? curKid.id : 'all'} kidName={curKid ? curKid.name : '모든 아이'} speak={speakText}
+        boardItems={(useCells || board?.cells || []).map((c, i) => { const v = cellView(c, i); return v.image && v.label ? { id: `b${board?.id}_${i}`, name: v.label, img: v.image } : null; }).filter(Boolean)}
+        onClose={() => setShowTools(false)} />}
       {renderPracticeSettings()}
       {showPicker && (() => {
         const AREAS = [
